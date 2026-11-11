@@ -19,6 +19,20 @@ Most published numbers are per token or estimated from FLOPs. We measure GPU ene
 | `greenroute/` | The measurement and benchmark code (in progress). |
 | `results/` | Raw logs and measured numbers, as they come. |
 
+## Run Sprint 0
+
+Needs Python 3.10+ and a [Modal](https://modal.com) account.
+
+```bash
+uv venv --python 3.10 .venv && source .venv/bin/activate
+uv pip install -e ".[dev]"
+modal setup                      # one-time browser login
+pytest -q                        # local unit tests, no GPU needed
+modal run experiments/sprint0.py # Qwen3-1.7B, 100 GSM8K problems, A100-80GB
+```
+
+Options: `--model`, `--n`, `--max-num-seqs`, `--max-tokens`. Pick the GPU with `GREENROUTE_GPU=H100`. Each run writes a JSON file to `results/sprint0/` with the config, the exact command, the git commit and per-problem records.
+
 ## Roadmap
 
 - **Sprint 0** — one small model served with vLLM, GPU energy instrumented, first J/task number logged.
