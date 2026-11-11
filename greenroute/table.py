@@ -86,6 +86,7 @@ def run_table(
     from greenroute.bench import VLLM_VERSION
     from greenroute.energy import EnergyMeter
     from greenroute.report import summarize
+    from greenroute.steady import downsample, run_engine, steady_window
     from greenroute.tasks import TASKS, load_problems, split_thinking
 
     task = TASKS[task_name]
@@ -97,8 +98,15 @@ def run_table(
 
     meter = EnergyMeter()
     llm = LLM(model=model, max_num_seqs=max_num_seqs, max_model_len=max_model_len, seed=seed)
-    end_id = think_end_id(llm.get_tokenizer())
+    tokenizer = llm.get_tokenizer()
+    end_id = think_end_id(tokenizer)
     chat_kwargs = {"enable_thinking": thinking}  # ignored by templates that have no thinking mode
+    # Rendered and tokenized here, as llm.chat would, so the engine can be driven step by step.
+    prompt_ids = [
+        tokenizer(tokenizer.apply_chat_template(m, tokenize=False, add_generation_prompt=True, **chat_kwargs),
+                  add_special_tokens=False).input_ids
+        for m in messages
+    ]
 
     greedy = SamplingParams(temperature=0.0, max_tokens=max_tokens, logprobs=1)
     llm.chat(messages[:8], SamplingParams(temperature=0.0, max_tokens=64), chat_template_kwargs=chat_kwargs,
@@ -106,7 +114,8 @@ def run_table(
     idle_watts = meter.idle_watts(idle_seconds)
 
     with meter.span() as span:
-        outputs = llm.chat(messages, greedy, chat_template_kwargs=chat_kwargs, use_tqdm=False)
+        outputs, timeline = run_engine(llm, prompt_ids, greedy, meter)
+    steady = steady_window(timeline, max_num_seqs)
 
     def parse(o) -> tuple[str | None, int]:
         _, answer = split_thinking(o.text)
@@ -147,6 +156,14 @@ def run_table(
         "mean_reasoning_tokens": statistics.fmean(r["reasoning_tokens"] for r in records),
         "tokens_per_solved_task": summary["output_tokens"] / n_correct if n_correct else None,
     })
+    if steady and steady["j_per_output_token"]:
+        # Saturated cost per task: steady-state energy per token times this workload's tokens per task.
+        jpt = steady["j_per_output_token"] * summary["mean_output_tokens"]
+        steady["j_per_task"] = jpt
+        steady["j_per_solved_task"] = jpt / summary["accuracy"] if summary["accuracy"] else None
+    summary["steady"] = steady
+    keep_rows = tuple(i for i in ((steady or {}).get("end_index"), (steady or {}).get("turnover_start_index"))
+                      if i is not None)
 
     sample_info = None
     if samples > 0:
@@ -199,5 +216,7 @@ def run_table(
         "summary": summary,
         "samples": sample_info,
         "per_gpu_joules": span.reading.per_gpu_joules,
+        # (seconds, joules, unfinished requests, output tokens so far), downsampled; window end kept.
+        "timeline": downsample(timeline, keep=keep_rows),
         "records": records,
     }

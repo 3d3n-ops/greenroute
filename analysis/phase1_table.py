@@ -25,8 +25,13 @@ def load(run_dir: Path) -> dict[str, dict]:
 
 
 def per_task_joules(result: dict) -> list[float]:
+    """Energy per task: steady-state J/token where the run has one, else whole-run J/token.
+
+    Whole-run energy includes the drain-out tail of an offline batch, which overstates
+    the saturated cost by up to about 2x for thinking mode (see greenroute/steady.py).
+    """
     s = result["summary"]
-    jpt = s["energy_j_total"] / s["output_tokens"]
+    jpt = (s.get("steady") or {}).get("j_per_output_token") or s["energy_j_total"] / s["output_tokens"]
     return [jpt * r["output_tokens"] for r in result["records"]]
 
 

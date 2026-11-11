@@ -54,6 +54,12 @@ def threshold_for_share(score: list[float], share: float) -> float:
     return s[k - 1]
 
 
+def joules(result: dict) -> float:
+    """Mean energy per task on the same basis the cascades use (steady state where measured)."""
+    e = per_task_joules(result)
+    return sum(e) / len(e)
+
+
 def key(result: dict) -> str:
     c = result["config"]
     return f"{c['model'].split('/')[-1]}_{'think' if c['thinking'] else 'fast'}"
@@ -64,17 +70,16 @@ def main(train_dir: str, test_dir: str) -> None:
     test = {key(v): v for v in load(Path(test_dir)).values() if v["config"]["task"] == "gsm8k/test"}
 
     print(f"{'single config':<18} {'train acc':>9} {'test acc':>9} {'test J/task':>11}")
-    for k in sorted(test, key=lambda k: test[k]["summary"]["j_per_task_total"]):
+    for k in sorted(test, key=lambda k: joules(test[k])):
         tr = train[k]["summary"]["accuracy"] if k in train else float("nan")
-        s = test[k]["summary"]
-        print(f"{k:<18} {tr:9.1%} {s['accuracy']:9.1%} {s['j_per_task_total']:11.1f}")
+        print(f"{k:<18} {tr:9.1%} {test[k]['summary']['accuracy']:9.1%} {joules(test[k]):11.1f}")
 
     for ka, kb in PAIRS:
         if not all(k in train and k in test for k in (ka, kb)):
             continue
         a, b = test[ka], test[kb]
-        print(f"\n{ka} -> {kb}   (alone: {a['summary']['accuracy']:.1%} at {a['summary']['j_per_task_total']:.1f} J, "
-              f"{b['summary']['accuracy']:.1%} at {b['summary']['j_per_task_total']:.1f} J)")
+        print(f"\n{ka} -> {kb}   (alone: {a['summary']['accuracy']:.1%} at {joules(a):.1f} J, "
+              f"{b['summary']['accuracy']:.1%} at {joules(b):.1f} J)")
         print(f"  {'signal':<20} {'train share':>11} {'test share':>10} {'test acc':>9} {'J/task':>8}")
         tr_sig, te_sig = signals(train[ka]), signals(a)
         for name in tr_sig:

@@ -53,6 +53,10 @@ class EnergyMeter:
     def _counters_mj(self) -> list[int]:
         return [self._nvml.nvmlDeviceGetTotalEnergyConsumption(h) for h in self._handles]
 
+    def read_mj(self) -> int:
+        """Cumulative energy counter summed over the metered GPUs, in millijoules."""
+        return sum(self._counters_mj())
+
     def span(self) -> "_Span":
         return _Span(self)
 
