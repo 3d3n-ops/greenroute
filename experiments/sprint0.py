@@ -20,90 +20,21 @@ from pathlib import Path
 
 import modal
 
-GPU = os.environ.get("GREENROUTE_GPU", "A100-80GB")
-VLLM_VERSION = "0.10.1.1"
+from greenroute.modal_image import gpu_image
 
-image = (
-    modal.Image.debian_slim(python_version="3.12")
-    # vLLM 0.10.x targets transformers 4.x; transformers 5 removed APIs it calls.
-    .pip_install(
-        f"vllm=={VLLM_VERSION}",
-        "transformers>=4.55,<4.57",
-        "huggingface-hub<1.0",
-        "datasets>=3,<4.2",
-        "nvidia-ml-py",
-    )
-    .add_local_python_source("greenroute")
-)
+GPU = os.environ.get("GREENROUTE_GPU", "A100-80GB")
+
 hf_cache = modal.Volume.from_name("greenroute-hf-cache", create_if_missing=True)
 app = modal.App("greenroute-sprint0")
 
 
-@app.function(gpu=GPU, image=image, volumes={"/root/.cache/huggingface": hf_cache}, timeout=3600)
+@app.function(gpu=GPU, image=gpu_image(), volumes={"/root/.cache/huggingface": hf_cache}, timeout=3600)
 def measure(model: str, n: int, max_num_seqs: int, max_tokens: int, seed: int, idle_seconds: float) -> dict:
-    from datasets import load_dataset
-    from vllm import LLM, SamplingParams
+    from greenroute.bench import run_gsm8k
 
-    from greenroute import gsm8k
-    from greenroute.energy import EnergyMeter
-    from greenroute.report import summarize
-
-    meter = EnergyMeter()
-    problems = load_dataset("openai/gsm8k", "main", split="test").select(range(n))
-    messages = [gsm8k.build_messages(p["question"]) for p in problems]
-
-    llm = LLM(model=model, max_num_seqs=max_num_seqs, max_model_len=4096, seed=seed)
-    params = SamplingParams(temperature=0.0, max_tokens=max_tokens)
-    chat_kwargs = {"enable_thinking": False}  # Qwen3: measure non-thinking mode first
-
-    # Warm up kernels and caches so they don't land in the measured span.
-    llm.chat(messages[:8], params, chat_template_kwargs=chat_kwargs, use_tqdm=False)
-
-    # Idle baseline with the model loaded: what an unused server draws.
-    idle_watts = meter.idle_watts(idle_seconds)
-
-    with meter.span() as span:
-        outputs = llm.chat(messages, params, chat_template_kwargs=chat_kwargs, use_tqdm=False)
-
-    records = []
-    for i, (p, out) in enumerate(zip(problems, outputs)):
-        text = out.outputs[0].text
-        records.append(
-            {
-                "index": i,
-                "correct": gsm8k.is_correct(text, p["answer"]),
-                "predicted": gsm8k.extract_answer(text),
-                "gold": gsm8k.gold_answer(p["answer"]),
-                "output_tokens": len(out.outputs[0].token_ids),
-            }
-        )
-
-    summary = summarize(
-        span.reading,
-        idle_watts,
-        n_tasks=len(records),
-        n_correct=sum(r["correct"] for r in records),
-        output_tokens=sum(r["output_tokens"] for r in records),
-    )
-    return {
-        "config": {
-            "model": model,
-            "task": "gsm8k/test",
-            "n": n,
-            "max_num_seqs": max_num_seqs,
-            "max_tokens": max_tokens,
-            "temperature": 0.0,
-            "seed": seed,
-            "thinking": False,
-            "vllm": VLLM_VERSION,
-            "gpu_requested": GPU,
-            "devices": meter.device_info(),
-            "energy_source": "nvmlDeviceGetTotalEnergyConsumption",
-        },
-        "summary": summary,
-        "per_gpu_joules": span.reading.per_gpu_joules,
-        "records": records,
-    }
+    result = run_gsm8k(model, n, max_num_seqs, max_tokens, seed, idle_seconds)
+    result["config"]["gpu_requested"] = GPU
+    return result
 
 
 @app.local_entrypoint()
