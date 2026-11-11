@@ -96,6 +96,8 @@ class _Span:
 
 
 TELEMETRY_FIELDS = ("power_w", "sm_clock_mhz", "util_pct", "mem_used_gb", "temp_c")
+# Also recorded per sample but not summarized: "ts" (wall clock) and "energy_j" (cumulative counter),
+# which let energy be measured over any window of a level.
 
 
 class TelemetrySampler:
@@ -127,6 +129,7 @@ class TelemetrySampler:
             "util_pct": n.nvmlDeviceGetUtilizationRates(h).gpu,
             "mem_used_gb": n.nvmlDeviceGetMemoryInfo(h).used / 1e9,
             "temp_c": n.nvmlDeviceGetTemperature(h, n.NVML_TEMPERATURE_GPU),
+            "energy_j": n.nvmlDeviceGetTotalEnergyConsumption(h) / 1000.0,
         }
 
     def _loop(self) -> None:
@@ -134,7 +137,7 @@ class TelemetrySampler:
         while not self._stop.is_set():
             t = round(time.perf_counter() - t0, 3)
             for i, h in enumerate(self._handles):
-                self.samples.append({"t": t, "gpu": i, **self._read(h)})
+                self.samples.append({"t": t, "ts": time.time(), "gpu": i, **self._read(h)})
             self._stop.wait(self.interval)
 
     def __enter__(self) -> "TelemetrySampler":
