@@ -97,7 +97,7 @@ def test_one_request_times_stream_and_counts_tokens():
 
     chunks = [_chunk(""), _chunk("6 + 2 = 8"), _chunk("\nAnswer: 8"), _chunk(usage=NS(completion_tokens=5))]
     client = _FakeClient(chunks)
-    r = asyncio.run(_one_request(client, "m", 0, [{"role": "user", "content": "q"}], 0.0, time.perf_counter(), 64))
+    r = asyncio.run(_one_request(client, "m", 0, [{"role": "user", "content": "q"}], 0.0, time.time(), 64))
     assert r["error"] is None
     assert r["text"] == "6 + 2 = 8\nAnswer: 8"
     assert r["output_tokens"] == 5
@@ -113,6 +113,37 @@ def test_one_request_records_errors_instead_of_raising():
 
     from greenroute.loadgen import _one_request
 
-    r = asyncio.run(_one_request(_FakeClient(fail=True), "m", 3, [], 0.0, time.perf_counter(), 64))
+    r = asyncio.run(_one_request(_FakeClient(fail=True), "m", 3, [], 0.0, time.time(), 64))
     assert r["error"] and "boom" in r["error"]
     assert r["ttft_s"] is None and r["output_tokens"] == 0
+
+
+def test_worker_pool_round_trip(monkeypatch):
+    """The multi-process path: requests dealt across workers, records come back in index order."""
+    import asyncio
+
+    from greenroute import loadgen
+
+    pool = loadgen.make_pool(2)
+    try:
+        # Unreachable server: every request errors fast, which exercises the full path without a GPU.
+        msgs = [[{"role": "user", "content": str(i)}] for i in range(6)]
+        out = asyncio.run(loadgen.run_level("http://127.0.0.1:9", "m", msgs, rate=0, pool=pool, workers=2,
+                                            metrics_interval=0.05))
+    finally:
+        pool.shutdown()
+    assert [r["index"] for r in out["records"]] == list(range(6))
+    assert all(r["error"] for r in out["records"])
+    assert out["wall_s"] > 0
+    assert out["client_cpu_frac_max"] >= 0
+    lag = loadgen.send_lag(out["records"])
+    assert len(lag) == 6 and all(x > -0.05 for x in lag)  # burst: sent at, not before, the shared start
+
+
+def test_common_accuracy_uses_only_the_shared_problems():
+    from greenroute.serve_bench import common_accuracy
+
+    recs = [{"index": i, "correct": i < 3} for i in range(10)]
+    assert common_accuracy(recs, 4) == 0.75   # 3 of the first 4
+    assert common_accuracy(recs, 10) == 0.3   # same model, bigger subset, different number
+    assert common_accuracy([], 4) is None

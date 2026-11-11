@@ -14,13 +14,13 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 import time
 from pathlib import Path
 
 import modal
 
 from greenroute.modal_image import gpu_image
+from greenroute.provenance import git_sha
 
 GPU = os.environ.get("GREENROUTE_GPU", "A100-80GB")
 
@@ -47,10 +47,7 @@ def main(
     idle_seconds: float = 10.0,
 ):
     result = measure.remote(model, n, max_num_seqs, max_tokens, seed, idle_seconds)
-    try:
-        sha = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], text=True).strip()
-    except Exception:
-        sha = "unknown"
+    sha = git_sha()
     result["config"]["git_sha"] = sha
     result["config"]["command"] = (
         f"GREENROUTE_GPU={GPU} modal run experiments/sprint0.py --model {model} --n {n} "

@@ -13,13 +13,13 @@ from __future__ import annotations
 import csv
 import json
 import os
-import subprocess
 import time
 from pathlib import Path
 
 import modal
 
 from greenroute.modal_image import gpu_image
+from greenroute.provenance import git_sha
 
 # H100 by default: A100-80GB capacity on Modal was unavailable on 2026-11-11.
 GPU = os.environ.get("GREENROUTE_GPU", "H100")
@@ -65,10 +65,7 @@ CSV_FIELDS = [
 @app.local_entrypoint()
 def main(suites: str = "repeats,batch,models", n: int = 1319, max_tokens: int = 1024):
     configs = [c for name in suites.split(",") for c in SUITES[name.strip()]]
-    try:
-        sha = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], text=True).strip()
-    except Exception:
-        sha = "unknown"
+    sha = git_sha()
 
     out_dir = Path("results/sprint1") / time.strftime("%Y%m%d-%H%M%S")
     out_dir.mkdir(parents=True, exist_ok=True)

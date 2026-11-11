@@ -7,6 +7,7 @@ Runs inside one GPU container. The model loads once; each request rate is a
 from __future__ import annotations
 
 import asyncio
+import os
 import statistics
 import subprocess
 import time
@@ -52,6 +53,23 @@ def requests_for_rate(rate: float, duration_s: float, n_min: int, n_max: int) ->
     return max(n_min, min(n_max, round(rate * duration_s)))
 
 
+def common_accuracy(records: list[dict], n_common: int) -> float | None:
+    """Accuracy on the first n_common problems, which every level sends.
+
+    Levels send different numbers of problems, so their overall accuracy is over
+    different subsets and is not comparable across rates. This one is.
+    """
+    head = [r for r in records if r["index"] < n_common]
+    return sum(bool(r["correct"]) for r in head) / len(head) if head else None
+
+
+def visible_cpus() -> int | None:
+    try:
+        return len(os.sched_getaffinity(0))
+    except AttributeError:  # not on Linux
+        return os.cpu_count()
+
+
 def run_latency_sweep(
     model: str,
     rates: list[float],
@@ -63,12 +81,13 @@ def run_latency_sweep(
     idle_seconds: float = 10.0,
     settle_seconds: float = 5.0,
     seed: int = 0,
+    client_workers: int = 8,
 ) -> dict:
     from datasets import load_dataset
 
     from greenroute import gsm8k
     from greenroute.energy import EnergyMeter, TelemetrySampler
-    from greenroute.loadgen import percentiles, run_level, summarize_metrics
+    from greenroute.loadgen import make_pool, percentiles, run_level, send_lag, summarize_metrics
     from greenroute.report import summarize
 
     meter = EnergyMeter()
@@ -86,12 +105,14 @@ def run_latency_sweep(
             if attempt == 2:
                 raise
             proc.wait(timeout=30)
+    pool = None
     try:
+        pool = make_pool(client_workers)  # started before any measurement
         test = load_dataset("openai/gsm8k", "main", split="test")
 
         # Warm up kernels, CUDA graphs and the HTTP path; not measured.
         warm = [gsm8k.build_messages(test[i]["question"]) for i in range(16)]
-        asyncio.run(run_level(BASE_URL, model, warm, rate=0, max_tokens=max_tokens))
+        asyncio.run(run_level(BASE_URL, model, warm, rate=0, pool=pool, workers=client_workers, max_tokens=max_tokens))
         idle_watts = meter.idle_watts(idle_seconds)
 
         levels = []
@@ -101,7 +122,8 @@ def run_latency_sweep(
             messages = [gsm8k.build_messages(p["question"]) for p in problems]
 
             with TelemetrySampler(meter, interval=0.1) as tel, meter.span() as span:
-                out = asyncio.run(run_level(BASE_URL, model, messages, rate=rate, seed=seed, max_tokens=max_tokens))
+                out = asyncio.run(run_level(BASE_URL, model, messages, rate=rate, pool=pool, workers=client_workers,
+                                            seed=seed, max_tokens=max_tokens))
 
             recs = out["records"]
             for r, p in zip(recs, problems):
@@ -121,6 +143,9 @@ def run_latency_sweep(
                 "tpot_s": percentiles([r["tpot_s"] for r in ok if r["tpot_s"] is not None]),
                 "e2e_s": percentiles([r["e2e_s"] for r in ok]),
                 "n_errors": len(recs) - len(ok),
+                # Both diagnose the sender: lag near 0 and CPU well under 1.0 mean it kept up.
+                "send_lag_s": percentiles(send_lag(recs)),
+                "client_cpu_frac_max": out["client_cpu_frac_max"],
                 "achieved_rps": len(recs) / out["wall_s"] if out["wall_s"] else None,
                 "offered_rps": rate if rate > 0 else None,
                 "mean_output_tokens": statistics.fmean(r["output_tokens"] for r in ok) if ok else None,
@@ -129,6 +154,8 @@ def run_latency_sweep(
                 "rate": rate,
                 "label": f"{rate:g} rps" if rate > 0 else "burst",
                 "n": n,
+                "n_common": min(n_min, n),
+                "accuracy_common": common_accuracy(recs, min(n_min, n)),
                 "energy": energy,
                 "latency": latency,
                 "gpu": tel.summary(),
@@ -154,6 +181,8 @@ def run_latency_sweep(
                 "thinking": False,
                 "vllm": VLLM_VERSION,
                 "mode": "openai-server, open-loop Poisson arrivals, streaming",
+                "client_workers": client_workers,
+                "cpus_visible": visible_cpus(),
                 "devices": meter.device_info(),
                 "energy_source": "nvmlDeviceGetTotalEnergyConsumption",
                 "idle_watts": idle_watts,
@@ -161,6 +190,8 @@ def run_latency_sweep(
             "levels": levels,
         }
     finally:
+        if pool is not None:
+            pool.shutdown(cancel_futures=True)
         proc.terminate()
         try:
             proc.wait(timeout=30)

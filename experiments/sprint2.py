@@ -16,15 +16,16 @@ from __future__ import annotations
 import csv
 import json
 import os
-import subprocess
 import time
 from pathlib import Path
 
 import modal
 
 from greenroute.modal_image import gpu_image
+from greenroute.provenance import git_sha
 
 GPU = os.environ.get("GREENROUTE_GPU", "H100")
+CPUS = float(os.environ.get("GREENROUTE_CPUS", "16"))
 
 hf_cache = modal.Volume.from_name("greenroute-hf-cache", create_if_missing=True)
 app = modal.App("greenroute-sprint2")
@@ -36,6 +37,10 @@ app = modal.App("greenroute-sprint2")
     volumes={"/root/.cache/huggingface": hf_cache},
     timeout=3600,
     max_containers=int(os.environ.get("GREENROUTE_MAX_GPUS", "3")),
+    # The vLLM API server and the load generator are CPU-bound at high request rates;
+    # Modal's small default CPU share starved both in the first Sprint 2 run.
+    cpu=CPUS,
+    memory=32768,
 )
 def sweep(model: str, rates: list[float], max_num_seqs: int, duration_s: float) -> dict:
     from greenroute.serve_bench import run_latency_sweep
@@ -46,10 +51,12 @@ def sweep(model: str, rates: list[float], max_num_seqs: int, duration_s: float) 
 
 
 CSV_FIELDS = [
-    "model", "label", "rate", "n", "accuracy", "j_per_task_total", "j_per_task_active",
+    "model", "label", "rate", "n", "accuracy", "accuracy_common", "n_common",
+    "j_per_task_total", "j_per_task_active", "j_per_output_token_total",
     "j_per_solved_task_total", "ttft_p50", "ttft_p99", "tpot_p50", "tpot_p99", "e2e_p50", "e2e_p99",
     "achieved_rps", "running_mean", "waiting_mean", "kv_mean", "power_w_mean", "sm_clock_mhz_mean",
     "util_pct_mean", "temp_c_max", "n_errors",
+    "send_lag_p99", "client_cpu_frac_max",
 ]
 
 
@@ -59,6 +66,8 @@ def _row(model: str, lv: dict) -> dict:
     return {
         "model": model, "label": lv["label"], "rate": lv["rate"], "n": lv["n"],
         "accuracy": e["accuracy"],
+        "accuracy_common": lv.get("accuracy_common"), "n_common": lv.get("n_common"),
+        "j_per_output_token_total": e["j_per_output_token_total"],
         "j_per_task_total": e["j_per_task_total"],
         "j_per_task_active": e["energy_j_active"] / e["n_tasks"],
         "j_per_solved_task_total": e["j_per_solved_task_total"],
@@ -72,6 +81,8 @@ def _row(model: str, lv: dict) -> dict:
         "power_w_mean": g.get("power_w_mean"), "sm_clock_mhz_mean": g.get("sm_clock_mhz_mean"),
         "util_pct_mean": g.get("util_pct_mean"), "temp_c_max": g.get("temp_c_max"),
         "n_errors": lat["n_errors"],
+        "send_lag_p99": lat.get("send_lag_s", {}).get("p99"),
+        "client_cpu_frac_max": lat.get("client_cpu_frac_max"),
     }
 
 
@@ -84,10 +95,7 @@ def main(
 ):
     model_list = [m.strip() for m in models.split(",")]
     rate_list = [float(r) for r in rates.split(",")]
-    try:
-        sha = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], text=True).strip()
-    except Exception:
-        sha = "unknown"
+    sha = git_sha()
 
     out_dir = Path("results/sprint2") / time.strftime("%Y%m%d-%H%M%S")
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -101,6 +109,7 @@ def main(
             continue
         cfg = result["config"]
         cfg["git_sha"] = sha
+        cfg["cpu_requested"] = CPUS  # set here: the env override is not visible inside the container
         cfg["command"] = (f"GREENROUTE_GPU={GPU} modal run experiments/sprint2.py --models {models} "
                           f"--rates {rates} --max-num-seqs {max_num_seqs} --duration-s {duration_s}")
         name = cfg["model"].split("/")[-1]

@@ -59,8 +59,8 @@ def parse_vllm_metrics(text: str) -> dict:
 
 
 async def _one_request(client, model, idx, messages, send_at, t0, max_tokens) -> dict:
-    await asyncio.sleep(max(0.0, t0 + send_at - time.perf_counter()))
-    t_send = time.perf_counter()
+    await asyncio.sleep(max(0.0, t0 + send_at - time.time()))
+    t_send = time.time()
     t_first = None
     parts: list[str] = []
     completion_tokens = None
@@ -78,13 +78,13 @@ async def _one_request(client, model, idx, messages, send_at, t0, max_tokens) ->
         async for chunk in stream:
             if chunk.choices and chunk.choices[0].delta.content:
                 if t_first is None:
-                    t_first = time.perf_counter()
+                    t_first = time.time()
                 parts.append(chunk.choices[0].delta.content)
             if getattr(chunk, "usage", None):
                 completion_tokens = chunk.usage.completion_tokens
     except Exception as e:  # recorded, not raised: one failure shouldn't end the level
         error = repr(e)
-    t_end = time.perf_counter()
+    t_end = time.time()
 
     ttft = (t_first - t_send) if t_first is not None else None
     tpot = None
@@ -110,7 +110,7 @@ async def _scrape_metrics(base_url: str, interval: float, stop: asyncio.Event, t
         while not stop.is_set():
             try:
                 r = await http.get(f"{base_url}/metrics")
-                out.append({"t": time.perf_counter() - t0, **parse_vllm_metrics(r.text)})
+                out.append({"t": time.time() - t0, **parse_vllm_metrics(r.text)})
             except Exception:
                 pass
             try:
@@ -119,32 +119,95 @@ async def _scrape_metrics(base_url: str, interval: float, stop: asyncio.Event, t
                 pass
 
 
+def _worker_init() -> None:
+    """Import the heavy client stack before the clock starts."""
+    import httpx  # noqa: F401
+    import openai  # noqa: F401
+
+
+def _worker(base_url: str, model: str, items: list, t0: float, max_tokens: int) -> dict:
+    """One process: its own event loop and HTTP client for a slice of the schedule.
+
+    Also reports the share of one core this process used from the first scheduled send
+    to the end. Near 1.0 means the sender, not the server, was the limit.
+    """
+    cpu0 = time.process_time()
+    records = asyncio.run(_worker_async(base_url, model, items, t0, max_tokens))
+    busy_s = max(time.time() - t0, 1e-9)
+    return {"records": records, "cpu_frac": (time.process_time() - cpu0) / busy_s}
+
+
+async def _worker_async(base_url, model, items, t0, max_tokens) -> list[dict]:
+    import httpx
+    from openai import AsyncOpenAI
+
+    http = httpx.AsyncClient(
+        timeout=1800.0, limits=httpx.Limits(max_connections=2000, max_keepalive_connections=2000)
+    )
+    client = AsyncOpenAI(base_url=f"{base_url}/v1", api_key="unused", http_client=http, max_retries=0)
+    try:
+        return list(await asyncio.gather(
+            *(_one_request(client, model, idx, m, send_at, t0, max_tokens) for idx, m, send_at in items)
+        ))
+    finally:
+        await client.close()
+
+
+def make_pool(workers: int):
+    """Worker processes for the load generator, started and warmed before measurement."""
+    import multiprocessing as mp
+    from concurrent.futures import ProcessPoolExecutor
+
+    pool = ProcessPoolExecutor(workers, mp_context=mp.get_context("spawn"), initializer=_worker_init)
+    list(pool.map(abs, range(workers * 2)))  # force every worker to start and import
+    return pool
+
+
 async def run_level(
     base_url: str,
     model: str,
     message_lists: list[list[dict]],
     rate: float,
+    pool,
+    workers: int,
     seed: int = 0,
     max_tokens: int = 1024,
     metrics_interval: float = 0.5,
+    lead_s: float = 0.2,
 ) -> dict:
-    """Send every message list at `rate` req/s (Poisson; <= 0 = burst). Returns per-request records."""
-    from openai import AsyncOpenAI
+    """Send every message list at `rate` req/s (Poisson; <= 0 = burst) across `workers` processes.
 
-    client = AsyncOpenAI(base_url=f"{base_url}/v1", api_key="unused", timeout=1800.0, max_retries=0)
+    Requests are dealt round-robin to workers; all share one wall-clock schedule, so the
+    arrival process is the same as a single sender's. Returns per-request records.
+    """
     schedule = poisson_schedule(len(message_lists), rate, seed)
+    items = [(i, m, s) for i, (m, s) in enumerate(zip(message_lists, schedule))]
+    slices = [items[w::workers] for w in range(workers)]
+
+    loop = asyncio.get_running_loop()
     stop = asyncio.Event()
     metric_samples: list[dict] = []
-    t0 = time.perf_counter()
+    t0 = time.time() + lead_s
     scraper = asyncio.create_task(_scrape_metrics(base_url, metrics_interval, stop, t0, metric_samples))
-    records = await asyncio.gather(
-        *(_one_request(client, model, i, m, s, t0, max_tokens) for i, (m, s) in enumerate(zip(message_lists, schedule)))
-    )
-    wall = time.perf_counter() - t0
+    futures = [
+        loop.run_in_executor(pool, _worker, base_url, model, sl, t0, max_tokens) for sl in slices if sl
+    ]
+    results = await asyncio.gather(*futures)
+    wall = time.time() - t0
     stop.set()
     await scraper
-    await client.close()
-    return {"records": list(records), "metrics": metric_samples, "wall_s": wall}
+    records = sorted((r for part in results for r in part["records"]), key=lambda r: r["index"])
+    return {
+        "records": records,
+        "metrics": metric_samples,
+        "wall_s": wall,
+        "client_cpu_frac_max": max((part["cpu_frac"] for part in results), default=None),
+    }
+
+
+def send_lag(records: list[dict]) -> list[float]:
+    """How late each request left the sender versus its schedule. Growth means a starved client."""
+    return [r["sent_s"] - r["scheduled_s"] for r in records]
 
 
 def summarize_metrics(samples: list[dict]) -> dict:
