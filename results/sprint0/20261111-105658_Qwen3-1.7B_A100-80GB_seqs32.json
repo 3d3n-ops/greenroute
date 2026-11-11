@@ -1,0 +1,744 @@
+{
+  "config": {
+    "model": "Qwen/Qwen3-1.7B",
+    "task": "gsm8k/test",
+    "n": 100,
+    "max_num_seqs": 32,
+    "max_tokens": 1024,
+    "temperature": 0.0,
+    "seed": 0,
+    "thinking": false,
+    "vllm": "0.10.1.1",
+    "gpu_requested": "A100-80GB",
+    "devices": [
+      {
+        "name": "NVIDIA A100-SXM4-80GB",
+        "driver": "610.57.04"
+      }
+    ],
+    "energy_source": "nvmlDeviceGetTotalEnergyConsumption",
+    "git_sha": "e86226f",
+    "command": "GREENROUTE_GPU=A100-80GB modal run experiments/sprint0.py --model Qwen/Qwen3-1.7B --n 100 --max-num-seqs 32 --max-tokens 1024 --seed 0"
+  },
+  "summary": {
+    "n_tasks": 100,
+    "n_correct": 83,
+    "accuracy": 0.83,
+    "seconds": 10.921277358999987,
+    "avg_watts": 160.84180835792307,
+    "idle_watts": 69.64024203397037,
+    "energy_j_total": 1756.598,
+    "energy_j_active": 996.0376013991201,
+    "j_per_task_total": 17.56598,
+    "j_per_solved_task_total": 21.163831325301203,
+    "j_per_solved_task_active": 12.000453028905062,
+    "output_tokens": 22684,
+    "j_per_output_token_total": 0.07743775348263093,
+    "tasks_per_hour": 32963.177123537826
+  },
+  "per_gpu_joules": [
+    1756.598
+  ],
+  "records": [
+    {
+      "index": 0,
+      "correct": true,
+      "predicted": "18",
+      "gold": "18",
+      "output_tokens": 218
+    },
+    {
+      "index": 1,
+      "correct": true,
+      "predicted": "3",
+      "gold": "3",
+      "output_tokens": 112
+    },
+    {
+      "index": 2,
+      "correct": true,
+      "predicted": "70000",
+      "gold": "70000",
+      "output_tokens": 222
+    },
+    {
+      "index": 3,
+      "correct": false,
+      "predicted": "180",
+      "gold": "540",
+      "output_tokens": 73
+    },
+    {
+      "index": 4,
+      "correct": true,
+      "predicted": "20",
+      "gold": "20",
+      "output_tokens": 282
+    },
+    {
+      "index": 5,
+      "correct": true,
+      "predicted": "64",
+      "gold": "64",
+      "output_tokens": 227
+    },
+    {
+      "index": 6,
+      "correct": true,
+      "predicted": "260",
+      "gold": "260",
+      "output_tokens": 268
+    },
+    {
+      "index": 7,
+      "correct": false,
+      "predicted": "140",
+      "gold": "160",
+      "output_tokens": 389
+    },
+    {
+      "index": 8,
+      "correct": false,
+      "predicted": "315",
+      "gold": "45",
+      "output_tokens": 400
+    },
+    {
+      "index": 9,
+      "correct": true,
+      "predicted": "460",
+      "gold": "460",
+      "output_tokens": 204
+    },
+    {
+      "index": 10,
+      "correct": true,
+      "predicted": "366",
+      "gold": "366",
+      "output_tokens": 147
+    },
+    {
+      "index": 11,
+      "correct": false,
+      "predicted": "700",
+      "gold": "694",
+      "output_tokens": 198
+    },
+    {
+      "index": 12,
+      "correct": false,
+      "predicted": "12",
+      "gold": "13",
+      "output_tokens": 317
+    },
+    {
+      "index": 13,
+      "correct": true,
+      "predicted": "18",
+      "gold": "18",
+      "output_tokens": 469
+    },
+    {
+      "index": 14,
+      "correct": true,
+      "predicted": "60",
+      "gold": "60",
+      "output_tokens": 265
+    },
+    {
+      "index": 15,
+      "correct": true,
+      "predicted": "125",
+      "gold": "125",
+      "output_tokens": 197
+    },
+    {
+      "index": 16,
+      "correct": true,
+      "predicted": "230",
+      "gold": "230",
+      "output_tokens": 154
+    },
+    {
+      "index": 17,
+      "correct": true,
+      "predicted": "57500",
+      "gold": "57500",
+      "output_tokens": 243
+    },
+    {
+      "index": 18,
+      "correct": true,
+      "predicted": "7",
+      "gold": "7",
+      "output_tokens": 185
+    },
+    {
+      "index": 19,
+      "correct": true,
+      "predicted": "6",
+      "gold": "6",
+      "output_tokens": 379
+    },
+    {
+      "index": 20,
+      "correct": true,
+      "predicted": "15",
+      "gold": "15",
+      "output_tokens": 440
+    },
+    {
+      "index": 21,
+      "correct": false,
+      "predicted": "2",
+      "gold": "14",
+      "output_tokens": 187
+    },
+    {
+      "index": 22,
+      "correct": true,
+      "predicted": "7",
+      "gold": "7",
+      "output_tokens": 84
+    },
+    {
+      "index": 23,
+      "correct": true,
+      "predicted": "8",
+      "gold": "8",
+      "output_tokens": 80
+    },
+    {
+      "index": 24,
+      "correct": true,
+      "predicted": "26",
+      "gold": "26",
+      "output_tokens": 133
+    },
+    {
+      "index": 25,
+      "correct": true,
+      "predicted": "2",
+      "gold": "2",
+      "output_tokens": 353
+    },
+    {
+      "index": 26,
+      "correct": true,
+      "predicted": "243",
+      "gold": "243",
+      "output_tokens": 169
+    },
+    {
+      "index": 27,
+      "correct": true,
+      "predicted": "16",
+      "gold": "16",
+      "output_tokens": 137
+    },
+    {
+      "index": 28,
+      "correct": true,
+      "predicted": "25",
+      "gold": "25",
+      "output_tokens": 167
+    },
+    {
+      "index": 29,
+      "correct": true,
+      "predicted": "104",
+      "gold": "104",
+      "output_tokens": 121
+    },
+    {
+      "index": 30,
+      "correct": true,
+      "predicted": "109",
+      "gold": "109",
+      "output_tokens": 195
+    },
+    {
+      "index": 31,
+      "correct": true,
+      "predicted": "80",
+      "gold": "80",
+      "output_tokens": 167
+    },
+    {
+      "index": 32,
+      "correct": true,
+      "predicted": "35",
+      "gold": "35",
+      "output_tokens": 128
+    },
+    {
+      "index": 33,
+      "correct": true,
+      "predicted": "70",
+      "gold": "70",
+      "output_tokens": 176
+    },
+    {
+      "index": 34,
+      "correct": true,
+      "predicted": "23",
+      "gold": "23",
+      "output_tokens": 260
+    },
+    {
+      "index": 35,
+      "correct": true,
+      "predicted": "9",
+      "gold": "9",
+      "output_tokens": 153
+    },
+    {
+      "index": 36,
+      "correct": true,
+      "predicted": "75",
+      "gold": "75",
+      "output_tokens": 144
+    },
+    {
+      "index": 37,
+      "correct": false,
+      "predicted": "0",
+      "gold": "2",
+      "output_tokens": 211
+    },
+    {
+      "index": 38,
+      "correct": false,
+      "predicted": "20",
+      "gold": "10",
+      "output_tokens": 357
+    },
+    {
+      "index": 39,
+      "correct": false,
+      "predicted": "24",
+      "gold": "18",
+      "output_tokens": 480
+    },
+    {
+      "index": 40,
+      "correct": true,
+      "predicted": "8",
+      "gold": "8",
+      "output_tokens": 240
+    },
+    {
+      "index": 41,
+      "correct": false,
+      "predicted": "1000",
+      "gold": "200",
+      "output_tokens": 302
+    },
+    {
+      "index": 42,
+      "correct": true,
+      "predicted": "26",
+      "gold": "26",
+      "output_tokens": 180
+    },
+    {
+      "index": 43,
+      "correct": false,
+      "predicted": "240",
+      "gold": "48",
+      "output_tokens": 297
+    },
+    {
+      "index": 44,
+      "correct": true,
+      "predicted": "20",
+      "gold": "20",
+      "output_tokens": 349
+    },
+    {
+      "index": 45,
+      "correct": true,
+      "predicted": "104",
+      "gold": "104",
+      "output_tokens": 249
+    },
+    {
+      "index": 46,
+      "correct": true,
+      "predicted": "163",
+      "gold": "163",
+      "output_tokens": 280
+    },
+    {
+      "index": 47,
+      "correct": true,
+      "predicted": "800",
+      "gold": "800",
+      "output_tokens": 313
+    },
+    {
+      "index": 48,
+      "correct": true,
+      "predicted": "8",
+      "gold": "8",
+      "output_tokens": 110
+    },
+    {
+      "index": 49,
+      "correct": true,
+      "predicted": "30",
+      "gold": "30",
+      "output_tokens": 176
+    },
+    {
+      "index": 50,
+      "correct": true,
+      "predicted": "294",
+      "gold": "294",
+      "output_tokens": 207
+    },
+    {
+      "index": 51,
+      "correct": true,
+      "predicted": "5",
+      "gold": "5",
+      "output_tokens": 146
+    },
+    {
+      "index": 52,
+      "correct": true,
+      "predicted": "15",
+      "gold": "15",
+      "output_tokens": 304
+    },
+    {
+      "index": 53,
+      "correct": true,
+      "predicted": "40",
+      "gold": "40",
+      "output_tokens": 220
+    },
+    {
+      "index": 54,
+      "correct": false,
+      "predicted": "48",
+      "gold": "40",
+      "output_tokens": 135
+    },
+    {
+      "index": 55,
+      "correct": true,
+      "predicted": "14",
+      "gold": "14",
+      "output_tokens": 111
+    },
+    {
+      "index": 56,
+      "correct": true,
+      "predicted": "3",
+      "gold": "3",
+      "output_tokens": 122
+    },
+    {
+      "index": 57,
+      "correct": true,
+      "predicted": "83",
+      "gold": "83",
+      "output_tokens": 374
+    },
+    {
+      "index": 58,
+      "correct": true,
+      "predicted": "57",
+      "gold": "57",
+      "output_tokens": 207
+    },
+    {
+      "index": 59,
+      "correct": true,
+      "predicted": "187",
+      "gold": "187",
+      "output_tokens": 139
+    },
+    {
+      "index": 60,
+      "correct": true,
+      "predicted": "17",
+      "gold": "17",
+      "output_tokens": 184
+    },
+    {
+      "index": 61,
+      "correct": true,
+      "predicted": "1430",
+      "gold": "1430",
+      "output_tokens": 164
+    },
+    {
+      "index": 62,
+      "correct": false,
+      "predicted": "150000",
+      "gold": "25000",
+      "output_tokens": 488
+    },
+    {
+      "index": 63,
+      "correct": true,
+      "predicted": "1596",
+      "gold": "1596",
+      "output_tokens": 195
+    },
+    {
+      "index": 64,
+      "correct": true,
+      "predicted": "300",
+      "gold": "300",
+      "output_tokens": 247
+    },
+    {
+      "index": 65,
+      "correct": true,
+      "predicted": "36",
+      "gold": "36",
+      "output_tokens": 217
+    },
+    {
+      "index": 66,
+      "correct": true,
+      "predicted": "48",
+      "gold": "48",
+      "output_tokens": 321
+    },
+    {
+      "index": 67,
+      "correct": false,
+      "predicted": "600",
+      "gold": "595",
+      "output_tokens": 184
+    },
+    {
+      "index": 68,
+      "correct": true,
+      "predicted": "36",
+      "gold": "36",
+      "output_tokens": 241
+    },
+    {
+      "index": 69,
+      "correct": true,
+      "predicted": "60",
+      "gold": "60",
+      "output_tokens": 188
+    },
+    {
+      "index": 70,
+      "correct": true,
+      "predicted": "7425",
+      "gold": "7425",
+      "output_tokens": 231
+    },
+    {
+      "index": 71,
+      "correct": true,
+      "predicted": "60",
+      "gold": "60",
+      "output_tokens": 101
+    },
+    {
+      "index": 72,
+      "correct": true,
+      "predicted": "221",
+      "gold": "221",
+      "output_tokens": 214
+    },
+    {
+      "index": 73,
+      "correct": true,
+      "predicted": "255",
+      "gold": "255",
+      "output_tokens": 141
+    },
+    {
+      "index": 74,
+      "correct": true,
+      "predicted": "88",
+      "gold": "88",
+      "output_tokens": 186
+    },
+    {
+      "index": 75,
+      "correct": false,
+      "predicted": "7.5",
+      "gold": "60",
+      "output_tokens": 223
+    },
+    {
+      "index": 76,
+      "correct": false,
+      "predicted": "4",
+      "gold": "5",
+      "output_tokens": 381
+    },
+    {
+      "index": 77,
+      "correct": true,
+      "predicted": "100",
+      "gold": "100",
+      "output_tokens": 287
+    },
+    {
+      "index": 78,
+      "correct": true,
+      "predicted": "6",
+      "gold": "6",
+      "output_tokens": 266
+    },
+    {
+      "index": 79,
+      "correct": true,
+      "predicted": "70",
+      "gold": "70",
+      "output_tokens": 92
+    },
+    {
+      "index": 80,
+      "correct": true,
+      "predicted": "10",
+      "gold": "10",
+      "output_tokens": 148
+    },
+    {
+      "index": 81,
+      "correct": true,
+      "predicted": "17",
+      "gold": "17",
+      "output_tokens": 214
+    },
+    {
+      "index": 82,
+      "correct": true,
+      "predicted": "623",
+      "gold": "623",
+      "output_tokens": 143
+    },
+    {
+      "index": 83,
+      "correct": true,
+      "predicted": "600",
+      "gold": "600",
+      "output_tokens": 180
+    },
+    {
+      "index": 84,
+      "correct": true,
+      "predicted": "15",
+      "gold": "15",
+      "output_tokens": 145
+    },
+    {
+      "index": 85,
+      "correct": true,
+      "predicted": "44",
+      "gold": "44",
+      "output_tokens": 129
+    },
+    {
+      "index": 86,
+      "correct": true,
+      "predicted": "22",
+      "gold": "22",
+      "output_tokens": 294
+    },
+    {
+      "index": 87,
+      "correct": false,
+      "predicted": "878.46",
+      "gold": "9360",
+      "output_tokens": 328
+    },
+    {
+      "index": 88,
+      "correct": true,
+      "predicted": "8000",
+      "gold": "8000",
+      "output_tokens": 151
+    },
+    {
+      "index": 89,
+      "correct": true,
+      "predicted": "24",
+      "gold": "24",
+      "output_tokens": 94
+    },
+    {
+      "index": 90,
+      "correct": true,
+      "predicted": "225",
+      "gold": "225",
+      "output_tokens": 224
+    },
+    {
+      "index": 91,
+      "correct": true,
+      "predicted": "28",
+      "gold": "28",
+      "output_tokens": 198
+    },
+    {
+      "index": 92,
+      "correct": true,
+      "predicted": "4",
+      "gold": "4",
+      "output_tokens": 555
+    },
+    {
+      "index": 93,
+      "correct": true,
+      "predicted": "36",
+      "gold": "36",
+      "output_tokens": 242
+    },
+    {
+      "index": 94,
+      "correct": true,
+      "predicted": "348",
+      "gold": "348",
+      "output_tokens": 340
+    },
+    {
+      "index": 95,
+      "correct": true,
+      "predicted": "40",
+      "gold": "40",
+      "output_tokens": 269
+    },
+    {
+      "index": 96,
+      "correct": true,
+      "predicted": "3",
+      "gold": "3",
+      "output_tokens": 115
+    },
+    {
+      "index": 97,
+      "correct": true,
+      "predicted": "12",
+      "gold": "12",
+      "output_tokens": 312
+    },
+    {
+      "index": 98,
+      "correct": true,
+      "predicted": "5",
+      "gold": "5",
+      "output_tokens": 294
+    },
+    {
+      "index": 99,
+      "correct": true,
+      "predicted": "58",
+      "gold": "58",
+      "output_tokens": 206
+    }
+  ]
+}

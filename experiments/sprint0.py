@@ -25,7 +25,14 @@ VLLM_VERSION = "0.10.1.1"
 
 image = (
     modal.Image.debian_slim(python_version="3.12")
-    .pip_install(f"vllm=={VLLM_VERSION}", "datasets", "nvidia-ml-py")
+    # vLLM 0.10.x targets transformers 4.x; transformers 5 removed APIs it calls.
+    .pip_install(
+        f"vllm=={VLLM_VERSION}",
+        "transformers>=4.55,<4.57",
+        "huggingface-hub<1.0",
+        "datasets>=3,<4.2",
+        "nvidia-ml-py",
+    )
     .add_local_python_source("greenroute")
 )
 hf_cache = modal.Volume.from_name("greenroute-hf-cache", create_if_missing=True)
