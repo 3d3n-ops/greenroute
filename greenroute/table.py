@@ -1,0 +1,203 @@
+"""Phase 1: the per-problem table for one configuration (model x thinking mode x task).
+
+One offline vLLM run on the local GPU, measured with the energy counter. Each
+problem gets its correctness, token counts, whether it was cut off, the model's
+token-probability confidence in its answer, and optionally k extra sampled
+answers (for self-consistency routing signals), whose energy is measured
+separately so the greedy number stays comparable.
+"""
+
+from __future__ import annotations
+
+import math
+import statistics
+
+THINK_MAX_MODEL_LEN = 16384
+THINK_MAX_TOKENS = 15000
+FAST_MAX_MODEL_LEN = 4096
+TAIL_TOKENS = 16  # the end of the answer, where the final answer line or code lives
+
+
+def think_end_id(tokenizer) -> int | None:
+    """Token id of '</think>' if the tokenizer has it as a single token, else None."""
+    try:
+        tid = tokenizer.convert_tokens_to_ids("</think>")
+    except Exception:
+        return None
+    if not isinstance(tid, int) or tid < 0 or tid == getattr(tokenizer, "unk_token_id", None):
+        return None
+    return tid
+
+
+def reasoning_tokens(token_ids: list[int], end_id: int | None) -> int:
+    """Tokens up to and including '</think>'; 0 when it never appears.
+
+    A reply whose reasoning never closed is all reasoning; the caller handles that
+    case from the decoded text, which shows the unclosed <think>.
+    """
+    ids = list(token_ids)
+    return ids.index(end_id) + 1 if end_id is not None and end_id in ids else 0
+
+
+def confidence(token_ids: list[int], logprobs, n_reasoning: int) -> dict:
+    """Summaries of the model's log-probabilities over its answer (reasoning excluded).
+
+    mean_lp: average over answer tokens. min_lp: the least sure token.
+    tail_mean_lp: average over the last TAIL_TOKENS answer tokens.
+    """
+    if not logprobs:
+        return {}
+    lps = []
+    for tid, pos in zip(token_ids, logprobs):
+        lp = pos[tid].logprob if pos and tid in pos else None
+        if lp is not None and math.isfinite(lp):
+            lps.append(lp)
+    ans = lps[n_reasoning:]
+    if not ans:
+        return {}
+    tail = ans[-TAIL_TOKENS:]
+    return {
+        "mean_lp": round(statistics.fmean(ans), 5),
+        "min_lp": round(min(ans), 5),
+        "tail_mean_lp": round(statistics.fmean(tail), 5),
+    }
+
+
+def sampling_kwargs(thinking: bool) -> dict:
+    """Qwen3's recommended sampling settings for each mode."""
+    return {"temperature": 0.6, "top_p": 0.95} if thinking else {"temperature": 0.7, "top_p": 0.8}
+
+
+def run_table(
+    model: str,
+    task_name: str,
+    split: str = "test",
+    n: int | None = None,
+    offset: int = 0,
+    thinking: bool = False,
+    max_num_seqs: int = 256,
+    max_tokens: int | None = None,
+    samples: int = 0,
+    seed: int = 0,
+    idle_seconds: float = 10.0,
+) -> dict:
+    from vllm import LLM, SamplingParams
+
+    from greenroute.bench import VLLM_VERSION
+    from greenroute.energy import EnergyMeter
+    from greenroute.report import summarize
+    from greenroute.tasks import TASKS, load_problems, split_thinking
+
+    task = TASKS[task_name]
+    problems = load_problems(task, split, n, offset)
+    messages = [task.build_messages(p) for p in problems]
+    if max_tokens is None:
+        max_tokens = THINK_MAX_TOKENS if thinking else task.max_tokens
+    max_model_len = THINK_MAX_MODEL_LEN if thinking else FAST_MAX_MODEL_LEN
+
+    meter = EnergyMeter()
+    llm = LLM(model=model, max_num_seqs=max_num_seqs, max_model_len=max_model_len, seed=seed)
+    end_id = think_end_id(llm.get_tokenizer())
+    chat_kwargs = {"enable_thinking": thinking}  # ignored by templates that have no thinking mode
+
+    greedy = SamplingParams(temperature=0.0, max_tokens=max_tokens, logprobs=1)
+    llm.chat(messages[:8], SamplingParams(temperature=0.0, max_tokens=64), chat_template_kwargs=chat_kwargs,
+             use_tqdm=False)  # warm-up, not measured
+    idle_watts = meter.idle_watts(idle_seconds)
+
+    with meter.span() as span:
+        outputs = llm.chat(messages, greedy, chat_template_kwargs=chat_kwargs, use_tqdm=False)
+
+    def parse(o) -> tuple[str | None, int]:
+        _, answer = split_thinking(o.text)
+        n_reason = reasoning_tokens(o.token_ids, end_id)
+        if answer is None:  # reasoning never closed: every token was reasoning
+            n_reason = len(o.token_ids)
+        return answer, n_reason
+
+    parsed = [parse(out.outputs[0]) for out in outputs]
+    scores = task.score_batch([a for a, _ in parsed], problems)
+
+    records = []
+    for i, (p, out, (answer, n_reason), sc) in enumerate(zip(problems, outputs, parsed, scores)):
+        o = out.outputs[0]
+        records.append({
+            "index": offset + i,
+            "id": p.get("task_id", offset + i),
+            **sc,
+            "prompt_tokens": len(out.prompt_token_ids or []),
+            "output_tokens": len(o.token_ids),
+            "reasoning_tokens": n_reason,
+            "finish_reason": o.finish_reason,
+            "no_answer": answer is None,
+            "confidence": confidence(o.token_ids, o.logprobs, n_reason),
+        })
+
+    summary = summarize(
+        span.reading, idle_watts,
+        n_tasks=len(records),
+        n_correct=sum(r["correct"] for r in records),
+        output_tokens=sum(r["output_tokens"] for r in records),
+    )
+    n_correct = summary["n_correct"]
+    summary.update({
+        "n_truncated": sum(r["finish_reason"] == "length" for r in records),
+        "n_no_answer": sum(r["no_answer"] for r in records),
+        "mean_output_tokens": statistics.fmean(r["output_tokens"] for r in records),
+        "mean_reasoning_tokens": statistics.fmean(r["reasoning_tokens"] for r in records),
+        "tokens_per_solved_task": summary["output_tokens"] / n_correct if n_correct else None,
+    })
+
+    sample_info = None
+    if samples > 0:
+        sp = SamplingParams(n=samples, max_tokens=max_tokens, seed=seed, **sampling_kwargs(thinking))
+        with meter.span() as s_span:
+            s_out = llm.chat(messages, sp, chat_template_kwargs=chat_kwargs, use_tqdm=False)
+        flat_answers, flat_problems = [], []
+        for p, out in zip(problems, s_out):
+            for o in out.outputs:
+                flat_answers.append(split_thinking(o.text)[1])
+                flat_problems.append(p)
+        flat_scores = task.score_batch(flat_answers, flat_problems)
+        k = 0
+        for r, out in zip(records, s_out):
+            r["samples"] = []
+            for o in out.outputs:
+                sc = flat_scores[k]
+                k += 1
+                r["samples"].append({"correct": sc["correct"], "predicted": sc.get("predicted"),
+                                     "output_tokens": len(o.token_ids)})
+        sample_tokens = sum(s["output_tokens"] for r in records for s in r["samples"])
+        sample_info = {
+            "k": samples,
+            **sampling_kwargs(thinking),
+            "energy_j_total": s_span.reading.joules,
+            "energy_j_active": s_span.reading.active_joules(idle_watts),
+            "seconds": s_span.reading.seconds,
+            "output_tokens": sample_tokens,
+            "j_per_output_token_total": s_span.reading.joules / sample_tokens if sample_tokens else None,
+            "pass_rate": statistics.fmean(s["correct"] for r in records for s in r["samples"]),
+        }
+
+    return {
+        "config": {
+            "model": model,
+            "task": f"{task_name}/{split}",
+            "offset": offset,
+            "n": len(records),
+            "thinking": thinking,
+            "max_num_seqs": max_num_seqs,
+            "max_tokens": max_tokens,
+            "max_model_len": max_model_len,
+            "temperature": 0.0,
+            "logprobs": 1,
+            "seed": seed,
+            "vllm": VLLM_VERSION,
+            "devices": meter.device_info(),
+            "energy_source": "nvmlDeviceGetTotalEnergyConsumption",
+        },
+        "summary": summary,
+        "samples": sample_info,
+        "per_gpu_joules": span.reading.per_gpu_joules,
+        "records": records,
+    }

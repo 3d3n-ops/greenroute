@@ -1,29 +1,59 @@
 # Methods (draft)
 
-This is a living one-pager. Critique is welcome — open an issue.
+This is a living document. Critique is welcome — open an issue. [`ROADMAP.md`](ROADMAP.md) says what is being built and why.
 
-## Metric
+## Metrics
 
-**J/task@Q** — GPU joules to complete one task, at a fixed quality floor, with retries and escalations included.
+**J/task@Q** — energy to complete one task at a fixed quality floor, with every retry, sample and escalation charged to the task.
 
-- A task counts as complete only if it passes the eval (correct GSM8K answer, passing HumanEval tests).
-- If a small model fails and the request escalates to a larger one, both passes are charged to the task.
-- The quality floor is set relative to the strongest model in the run (e.g. within 2 percentage points of its accuracy).
+- A task counts as complete only if it passes the task's automatic check: the exact numeric answer for GSM8K, all unit tests for HumanEval.
+- The quality floor is set relative to the best single configuration in the comparison: a policy passes if its accuracy is not more than 1 percentage point below it, tested with a paired bootstrap over the same problems.
+- If a request escalates from one model to another, both passes are charged to the task. So are confidence checks and extra samples.
+
+**Tokens per solved task** — output tokens (reasoning included) divided by tasks solved. Measurable for any model, including closed APIs.
+
+**J per token** — GPU energy per output token at a stated load. Measurable only for models we run.
+
+**Power curve** — for each model on each GPU, power is modelled as idle power, plus a serving floor while any request is active, plus a per-token cost that grows with throughput. It is fitted from a server sweep across request rates and used to attribute energy to individual requests, which batched serving cannot measure directly.
+
+## Reference loads
+
+Energy per task depends on load more than on anything else, so every energy number states its load. The benchmark reports two:
+
+- **Saturated:** the offline batch run at the highest concurrency (the floor is shared by as many tasks as possible).
+- **Latency-bound:** the highest request rate at which first-token latency p99 stays under a stated target, from the server sweep.
+
+Lightly loaded numbers are reported from the power curve, not as a headline.
 
 ## Measurement
 
-- **Energy source:** NVML's cumulative energy counter (`nvmlDeviceGetTotalEnergyConsumption`), read before and after each request or batch. On A100/H100 this is more reliable than integrating sampled power draw.
-- **Scope:** GPU only. Host CPU, memory, networking and cooling are not included; results are reported as GPU-side energy.
-- **Idle power:** reported separately and amortized explicitly, never silently dropped.
-- **Hardware is a variable, not a footnote:** every result records GPU model, driver, batch size, sequence length, quantization and serving config.
+- **Energy source:** NVML's cumulative energy counter (`nvmlDeviceGetTotalEnergyConsumption`), read before and after each batch or traffic level. On A100/H100 this is more reliable than integrating sampled power draw.
+- **Scope:** GPU only, for now. Host CPU, memory, networking and data-centre overhead are added in Phase 3 as stated multipliers, never folded silently into GPU numbers.
+- **Idle power:** measured with the model loaded and reported separately; "total" includes it and "active" subtracts it.
+- **Hardware is a variable:** every result records GPU model, driver, concurrency, token limits, thinking mode and serving config.
+- **Excluded from measurement:** scoring, including running HumanEval tests, happens after the energy span ends.
+
+## Measured vs estimated
+
+- Numbers from our own hardware are **measured**.
+- Numbers for closed models' energy are **estimated**, always reported as a range, and only from an estimator whose error has been published against measured open models.
+- The two are never shown in the same column or combined into one ranking.
+
+## Routing experiments
+
+- Router thresholds and any trained router are fit on GSM8K train problems; test problems are used once, for the reported number.
+- Every policy is compared with the best single configuration at the same total traffic, on the same hardware layout, at the same quality floor.
+- Results are reported as a curve against traffic level, with the crossover (if any) where routing starts to pay.
 
 ## Reporting rules
 
 - Report the full quality-vs-energy frontier, not a single best point.
-- Publish raw logs and the exact command that produced each number.
-- Freeze the eval suite before collecting results; changing it invalidates earlier numbers.
+- Publish raw per-problem logs and the exact command and commit that produced each number. A commit hash ending in `-dirty` means the code was not committed and the number is provisional.
+- Run every headline configuration at least three times and report the spread.
+- Freeze the task suite before collecting results; changing it invalidates earlier numbers.
 
 ## Open questions
 
-- Best way to amortize idle power across requests at low utilization.
-- How to attribute energy per request when requests share a batch.
+- How best to amortize idle power at low utilization, and whether to report it per task or per hour.
+- How well the power curve attributes energy to individual requests that share a batch; Phase 4's live runs test this.
+- Which grid signal to make primary for decisions: marginal (WattTime) or average (Electricity Maps).

@@ -2,42 +2,96 @@
 
 An open benchmark for the energy cost of LLM inference — measured per **completed task at a fixed quality bar**, retries included.
 
-> Status: early. Sprint 0 is underway. No results yet.
+> Status: early. Sprints 0–2 are done: the measurement harness works and we have first results on batch size, model size and traffic level. The headline metric, J/task@Q with routing and escalation, has **not** been measured yet. Phase 1 of the benchmark is in progress; see [`ROADMAP.md`](ROADMAP.md).
 
 ## The question
 
 How many joules does it take an LLM to actually finish a task (solve a GSM8K problem, pass a HumanEval test) at a given quality level — and how much of that can be cut by choosing the right model, quantization, batch size, time, and place to run it?
 
-Most published numbers are per token or estimated from FLOPs. We measure GPU energy directly and report **J/task@Q**: joules per completed task at a fixed quality floor, with every retry and escalation charged to the task.
+Most published numbers are per token or estimated from FLOPs. We measure GPU energy directly and aim to report **J/task@Q**: joules per completed task at a fixed quality floor, with every retry and escalation charged to the task.
+
+## Results so far
+
+All numbers are GPU-side joules per task on one NVIDIA H100, Qwen3 models in non-thinking mode, GSM8K test set, vLLM 0.10.1.1. "Per task" divides total GPU energy during the run, idle floor included, by the number of problems attempted.
+
+**How busy the GPU is matters far more than which model runs on it.** Under open-loop Poisson traffic to a vLLM server ([Sprint 2](results/sprint2/20261111-125043/summary.csv)):
+
+| J/task | 1 req/s | 8 req/s | 32 req/s | 64 req/s | burst | Accuracy (same 100 problems) |
+| --- | --- | --- | --- | --- | --- | --- |
+| Qwen3-1.7B | 228 | 35.0 | 10.4 | 6.8 | 5.3 | 84–88% |
+| Qwen3-8B | 417 | 54.4 | 18.6 | 15.3 | 14.0 | 96–98% |
+
+- Energy per task falls about 43x (1.7B) and 30x (8B) from 1 req/s to saturation. An H100 with a model loaded draws about 120 W doing nothing, and that floor is spread over however many tasks arrive.
+- At the same request rate the 8B costs 1.6–2.6x the 1.7B. Load swamps that: the 8B at 32 req/s is cheaper per task than the 1.7B at 8 req/s.
+- Accuracy does not change with load.
+- First-token latency (p99) stays under 0.1 s through 64 req/s for the 1.7B and through 32 req/s for the 8B, so most of the saving from running hotter costs no latency.
+
+![Energy per task against request rate](results/sprint2/20261111-123849/energy_vs_traffic.png)
+
+The chart is from a repeat of the same sweep ([`20261111-123849`](results/sprint2/20261111-123849/summary.csv)), so its labels differ from the table by a few percent.
+
+**Offline batch runs agree** ([Sprint 1](results/sprint1/20261111-113649/summary.csv), full 1,319-problem test set):
+
+| Qwen3-1.7B, concurrency cap | 1 | 8 | 32 | 128 | 256 |
+| --- | --- | --- | --- | --- | --- |
+| J/task | 220 | 30.5 | 11.3–13.4 | 6.4 | 5.4 |
+
+| At concurrency 32 | Qwen3-1.7B | Qwen3-4B | Qwen3-8B |
+| --- | --- | --- | --- |
+| Accuracy | 80.5–81.8% | 91.5% | 93.6% |
+| J/task | 11.3–13.4 | 24.1 | 34.0 |
+
+### What these numbers do not show
+
+- **No J/task@Q yet.** Nothing here applies a quality floor, retries or escalation. Routing is untested.
+- **Noise is large.** Identical configurations differ by up to about 18% in J/task between runs, and nominally identical greedy runs disagree on about 4% of individual problems (aggregate accuracy moves about 1.3 points). Only the large effects above are solid.
+- **Narrow scope.** One task with short answers, one GPU type, two or three models from one family, GPU energy only (no host CPU, memory or cooling).
+- **The top of the traffic range is rough.** The 64 req/s and burst levels last about 10 seconds, and the 1.7B's burst appears to be limited by the vLLM API server, not the GPU.
+- **The first Sprint 2 sweep is superseded.** [`results/sprint2/20261111-122048`](results/sprint2/20261111-122048) was limited by a single-process load generator above about 33 req/s; it is kept for the record.
+- **Known effect.** That batching and utilization drive energy per request is established in prior work. These runs validate the harness; the new contribution is meant to be the quality-matched comparison.
 
 ## What's here
 
 | Path | What |
 | --- | --- |
 | [`METHODS.md`](METHODS.md) | How we measure. Read this first if you want to review the work. |
+| [`ROADMAP.md`](ROADMAP.md) | The benchmark and router plan, phase by phase. |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | How to help, and how credit works. |
-| `greenroute/` | The measurement and benchmark code (in progress). |
-| `results/` | Raw logs and measured numbers, as they come. |
+| `greenroute/` | Energy meter, GSM8K scoring, offline benchmark, load generator and server benchmark. |
+| `experiments/` | One Modal entry point per sprint. |
+| `analysis/` | Scripts that turn a results folder into charts. |
+| `results/` | Raw per-problem logs, summaries and charts for every run. |
 
-## Run Sprint 0
+## Run it
 
-Needs Python 3.10+ and a [Modal](https://modal.com) account.
+Needs Python 3.10+ and a [Modal](https://modal.com) account. The GPU runs cost money on your Modal account.
 
 ```bash
 uv venv --python 3.10 .venv && source .venv/bin/activate
 uv pip install -e ".[dev]"
 modal setup                      # one-time browser login
 pytest -q                        # local unit tests, no GPU needed
-modal run experiments/sprint0.py # Qwen3-1.7B, 100 GSM8K problems, A100-80GB
 ```
 
-Options: `--model`, `--n`, `--max-num-seqs`, `--max-tokens`. Pick the GPU with `GREENROUTE_GPU=H100`. Each run writes a JSON file to `results/sprint0/` with the config, the exact command, the git commit and per-problem records.
+```bash
+modal run experiments/sprint0.py # one model, 100 problems: first J/task number
+modal run experiments/sprint1.py # repeats, batch-size sweep, model sizes (full test set)
+modal run experiments/sprint2.py # server under Poisson traffic: latency vs energy
+```
+
+Each script's docstring lists its options. Pick the GPU with `GREENROUTE_GPU` (default H100; Sprint 0 defaults to A100-80GB) and Sprint 2's CPU count with `GREENROUTE_CPUS` (default 16). Every run writes JSON with the config, the exact command, the git commit and per-problem records. A commit hash ending in `-dirty` means the code that produced the result was not committed.
 
 ## Roadmap
 
-- **Sprint 0** — one small model served with vLLM, GPU energy instrumented, first J/task number logged.
-- **Sprint 1** — one model family across sizes × quantization, frozen eval suite.
-- **Sprint 2** — does energy track API price? Router vs best single model at the same quality.
+- **Sprint 0 (done)** — one small model served with vLLM, GPU energy instrumented, first J/task number logged.
+- **Sprint 1 (done)** — repeats, batch-size sweep and three model sizes on the full GSM8K test set. Quantization was planned here and is deferred.
+- **Sprint 2 (done)** — latency vs energy for a real server under open-loop traffic, with GPU telemetry.
+- **Phase 1 (in progress)** — open-model ground truth: Qwen3 sizes with thinking off and on, GSM8K and HumanEval, per-problem correctness, tokens and confidence. The benchmark's measured core and the router's training data.
+- **Phase 2** — closed models: accuracy and tokens per solved task measured through their APIs, energy estimated with an estimator validated on open models.
+- **Phase 3** — from GPU joules to the grid: server and data-centre overhead, emissions by location and hour, and how much work can shift in time.
+- **Phase 4** — the serving framework and router, checked against live measured runs.
+
+Details and reasoning are in [`ROADMAP.md`](ROADMAP.md).
 
 ## Help wanted
 
