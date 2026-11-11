@@ -43,6 +43,25 @@ Qwen3 models can answer directly ("fast") or reason first ("thinking"). Offline 
 
 - **Model family matters.** Phi-4-mini (3.8B) scores 89.8% on GSM8K at 7.4 J/task (whole run), close to Qwen3-4B fast; OLMo-2 7B scores 84.2% at 18.7 J/task ([`20261111-151009`](results/phase1/20261111-151009/summary.csv)).
 
+### Power curves: effort under server traffic (Phase 1)
+
+The numbers above are at saturation. A vLLM server under Poisson traffic, one H100 per configuration, with energy measured over each level's steady window ([`20261111-172237`](results/phase1_power/20261111-172237/summary.csv), one run, provisional), shows the fixed cost of a running GPU dominating:
+
+| Fitted power curve | Idle | Floor while serving | Extra energy per output token |
+| --- | --- | --- | --- |
+| Qwen3-1.7B fast | 124 W | 241 W | 10.7 mJ |
+| Qwen3-4B fast | 136 W | 315 W | 15.5 mJ |
+| Qwen3-8B fast | 124 W | 366 W | 24.0 mJ |
+| Qwen3 1.7B / 4B / 8B thinking | 116–126 W | 263–358 W | 25.6–27.4 mJ |
+
+- **The floor is most of the bill.** The 8B fast at 30 req/s draws 546 W, of which the tokens account for about 200 W.
+- **At server traffic, thinking costs 1.3–2.1x a direct answer, not 8–12x.** For the 8B at 1 req/s, 511 J vs 408 J per task (1.25x); at 8 req/s, 94 J vs 52 J (1.8x). The floor is paid either way, so longer reasoning mostly fills capacity that would sit idle. The gap widens as the GPU fills.
+- **On the 8B, a thinking token costs the same as a direct one at equal throughput** (0.068 vs 0.066 J at about 8,240 tokens/s). Thinking is dearer because it is longer.
+- **For routing, the price of escalation depends on load:** cheap on a quiet GPU, close to the offline 8–12x on a full one. A router's confidence threshold should move with traffic.
+- **Agrees with Sprint 2:** the 1.7B fast at 1 and 32 req/s gives 227 and 10.3 J/task, against 228 and 10.4.
+
+![Energy per task against request rate, fast vs thinking](results/phase1_power/20261111-172237/energy_fast_vs_thinking.png)
+
 ### Load (Sprints 1–2)
 
 **How busy the GPU is matters far more than which model runs on it.** Under open-loop Poisson traffic to a vLLM server ([Sprint 2](results/sprint2/20261111-125043/summary.csv)):
@@ -76,6 +95,7 @@ The chart is from a repeat of the same sweep ([`20261111-123849`](results/sprint
 
 - **Routing is measured offline only.** The effort-routing numbers combine per-problem results from separate runs at saturation; no live router has been run, and at low traffic the GPU's fixed power floor changes the picture.
 - **Noise.** In Phase 1, accuracy moves under 1 point between runs and steady-state energy 1–8%. In the Sprint 1–2 numbers, which are whole-run, identical configurations differ by up to about 18% in J/task. Greedy decoding still changes the answer on 1–5% of individual problems between runs.
+- **The power curves are one provisional run.** Thinking was only run up to 8 req/s, so there is no saturated thinking point from the server; the lowest-rate thinking levels have 22–45 problems each; and power rises gradually at low load, so the straight-line fit overstates it there (for the 1.7B at 1 req/s, 243 W fitted against 197 W measured). Per-level numbers are measured; the fit is a summary.
 - **HumanEval energy is not yet at saturation.** Its 164 problems cannot fill the GPU, so its energy figures are higher than a busy server's and have no steady-state value.
 - **Narrow scope.** Two tasks, one GPU type, five models from three families, GPU energy only (no host CPU, memory or cooling).
 - **The top of the traffic range is rough.** The 64 req/s and burst levels last about 10 seconds, and the 1.7B's burst appears to be limited by the vLLM API server, not the GPU.
@@ -91,7 +111,7 @@ The chart is from a repeat of the same sweep ([`20261111-123849`](results/sprint
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | How to help, and how credit works. |
 | `greenroute/` | Energy meter, GSM8K scoring, offline benchmark, load generator and server benchmark. |
 | `experiments/` | One Modal entry point per sprint. |
-| `analysis/` | Scripts that turn a results folder into charts. |
+| `analysis/` | Scripts that turn a results folder into charts and fits. |
 | `results/` | Raw per-problem logs, summaries and charts for every run. |
 
 ## Run it
@@ -110,6 +130,7 @@ modal run experiments/sprint0.py # one model, 100 problems: first J/task number
 modal run experiments/sprint1.py # repeats, batch-size sweep, model sizes (full test set)
 modal run experiments/sprint2.py # server under Poisson traffic: latency vs energy
 modal run experiments/phase1.py  # per-problem table: Qwen3 sizes x thinking x GSM8K/HumanEval
+modal run experiments/phase1_power.py  # power curves: server sweeps, Qwen3 sizes x fast/thinking
 ```
 
 Each script's docstring lists its options. Pick the GPU with `GREENROUTE_GPU` (default H100; Sprint 0 defaults to A100-80GB) and Sprint 2's CPU count with `GREENROUTE_CPUS` (default 16). Every run writes JSON with the config, the exact command, the git commit and per-problem records. A commit hash ending in `-dirty` means the code that produced the result was not committed.

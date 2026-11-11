@@ -14,7 +14,7 @@ This is a living document. Critique is welcome — open an issue. [`ROADMAP.md`]
 
 **J per token** — GPU energy per output token at a stated load. Measurable only for models we run.
 
-**Power curve** — for each model on each GPU, power is modelled as idle power, plus a serving floor while any request is active, plus a per-token cost that grows with throughput. It is fitted from a server sweep across request rates and used to attribute energy to individual requests, which batched serving cannot measure directly.
+**Power curve** — for each model on each GPU, power is modelled as idle power, plus a serving floor while any request is active, plus a per-token cost that grows with throughput. It is fitted from a server sweep across request rates and used to attribute energy to individual requests, which batched serving cannot measure directly. The first sweep shows power rising gradually at low throughput rather than stepping to the floor, so the straight-line fit overstates low-load power by up to about 25%; until a curved model is validated, low-load numbers come from measured levels, not the fit.
 
 ## Reference loads
 
