@@ -2,7 +2,7 @@
 
 An open benchmark for the energy cost of LLM inference — measured per **completed task at a fixed quality bar**, retries included.
 
-> Status: early. Sprints 0–2 are done: the measurement harness works and we have first results on batch size, model size and traffic level. The headline metric, J/task@Q with routing and escalation, has **not** been measured yet. Phase 1 of the benchmark is in progress; see [`ROADMAP.md`](ROADMAP.md).
+> Status: early. Sprints 0–2 are done: the measurement harness works and we have first results on batch size, model size and traffic level. Phase 1 of the benchmark is in progress: Qwen3 models with thinking off and on, GSM8K and HumanEval, and first effort-routing results on GSM8K (offline, at saturation). See [`ROADMAP.md`](ROADMAP.md).
 
 ## The question
 
@@ -12,7 +12,38 @@ Most published numbers are per token or estimated from FLOPs. We measure GPU ene
 
 ## Results so far
 
-All numbers are GPU-side joules per task on one NVIDIA H100, Qwen3 models in non-thinking mode, GSM8K test set, vLLM 0.10.1.1. "Per task" divides total GPU energy during the run, idle floor included, by the number of problems attempted.
+All numbers are GPU-side joules per task on one NVIDIA H100, GSM8K test set (1,319 problems) unless stated, vLLM 0.10.1.1. "Per task" divides GPU energy, idle floor included, by the number of problems attempted.
+
+### Reasoning effort (Phase 1)
+
+Qwen3 models can answer directly ("fast") or reason first ("thinking"). Offline at saturation, measured at steady state (see [`METHODS.md`](METHODS.md#steady-state)), two runs each ([`20261111-162535`](results/phase1/20261111-162535/summary.csv), [`20261111-163041`](results/phase1/20261111-163041/summary.csv)):
+
+| GSM8K test | Accuracy | Tokens per task | J/task (steady) | J per output token |
+| --- | --- | --- | --- | --- |
+| Qwen3-1.7B fast | 81.3% | 232 | 5.8 (5.7–5.9) | 0.025 |
+| Qwen3-4B fast | 91.1% | 264 | 10.0 (9.9–10.0) | 0.038 |
+| Qwen3-8B fast | 93.7% | 261 | 13.0 (12.6–13.3) | 0.050 |
+| Qwen3-1.7B thinking | 90.5–91.2% | 1,460 | 68 (65–70) | 0.046 |
+| Qwen3-4B thinking | 93.9–94.1% | 1,340 | 82 (81–84) | 0.061 |
+| Qwen3-8B thinking | 95.1–95.2% | 1,450 | 113 (113–114) | 0.077 |
+
+- **Thinking costs 8–12x the energy of a direct answer** for 1.5–10 points of accuracy: about 5–6x more tokens, each about 1.6–1.8x dearer because reasoning chains make every step work over a longer context.
+- **Whole-run measurement overstates thinking by 1.4–1.9x.** An offline batch ends with a few very long answers running on a mostly empty GPU; a live server would fill those slots. Fast mode is overstated by only 4–15%.
+- **Routing effort per question recovers most of the accuracy for less than half the energy.** Answering with the 8B fast and sending the least confident answers to thinking mode, with the confidence threshold set on GSM8K train and applied unchanged to test ([`analysis/phase1_router.py`](analysis/phase1_router.py)):
+
+| GSM8K test, 8B | Escalated to thinking | Accuracy | J/task |
+| --- | --- | --- | --- |
+| Always fast | 0% | 93.7% | 12.6 |
+| Least confident token, low threshold | 4% | 94.2% | 21.8 |
+| Least confident token, higher threshold | 24% | 95.1% | 52.6 |
+| Always thinking | 100% | 95.1% | 113 |
+| Perfect router (bound, not achievable) | 6% | 96.8% | 31.1 |
+
+  The router's numbers are from one run ([`20261111-162535`](results/phase1/20261111-162535)). The gap to the perfect router is the open problem: a cheap signal that knows when the model is wrong.
+
+- **Model family matters.** Phi-4-mini (3.8B) scores 89.8% on GSM8K at 7.4 J/task (whole run), close to Qwen3-4B fast; OLMo-2 7B scores 84.2% at 18.7 J/task ([`20261111-151009`](results/phase1/20261111-151009/summary.csv)).
+
+### Load (Sprints 1–2)
 
 **How busy the GPU is matters far more than which model runs on it.** Under open-loop Poisson traffic to a vLLM server ([Sprint 2](results/sprint2/20261111-125043/summary.csv)):
 
@@ -43,9 +74,10 @@ The chart is from a repeat of the same sweep ([`20261111-123849`](results/sprint
 
 ### What these numbers do not show
 
-- **No J/task@Q yet.** Nothing here applies a quality floor, retries or escalation. Routing is untested.
-- **Noise is large.** Identical configurations differ by up to about 18% in J/task between runs, and nominally identical greedy runs disagree on about 4% of individual problems (aggregate accuracy moves about 1.3 points). Only the large effects above are solid.
-- **Narrow scope.** One task with short answers, one GPU type, two or three models from one family, GPU energy only (no host CPU, memory or cooling).
+- **Routing is measured offline only.** The effort-routing numbers combine per-problem results from separate runs at saturation; no live router has been run, and at low traffic the GPU's fixed power floor changes the picture.
+- **Noise.** In Phase 1, accuracy moves under 1 point between runs and steady-state energy 1–8%. In the Sprint 1–2 numbers, which are whole-run, identical configurations differ by up to about 18% in J/task. Greedy decoding still changes the answer on 1–5% of individual problems between runs.
+- **HumanEval energy is not yet at saturation.** Its 164 problems cannot fill the GPU, so its energy figures are higher than a busy server's and have no steady-state value.
+- **Narrow scope.** Two tasks, one GPU type, five models from three families, GPU energy only (no host CPU, memory or cooling).
 - **The top of the traffic range is rough.** The 64 req/s and burst levels last about 10 seconds, and the 1.7B's burst appears to be limited by the vLLM API server, not the GPU.
 - **The first Sprint 2 sweep is superseded.** [`results/sprint2/20261111-122048`](results/sprint2/20261111-122048) was limited by a single-process load generator above about 33 req/s; it is kept for the record.
 - **Known effect.** That batching and utilization drive energy per request is established in prior work. These runs validate the harness; the new contribution is meant to be the quality-matched comparison.
@@ -77,6 +109,7 @@ pytest -q                        # local unit tests, no GPU needed
 modal run experiments/sprint0.py # one model, 100 problems: first J/task number
 modal run experiments/sprint1.py # repeats, batch-size sweep, model sizes (full test set)
 modal run experiments/sprint2.py # server under Poisson traffic: latency vs energy
+modal run experiments/phase1.py  # per-problem table: Qwen3 sizes x thinking x GSM8K/HumanEval
 ```
 
 Each script's docstring lists its options. Pick the GPU with `GREENROUTE_GPU` (default H100; Sprint 0 defaults to A100-80GB) and Sprint 2's CPU count with `GREENROUTE_CPUS` (default 16). Every run writes JSON with the config, the exact command, the git commit and per-problem records. A commit hash ending in `-dirty` means the code that produced the result was not committed.
@@ -91,7 +124,9 @@ Each script's docstring lists its options. Pick the GPU with `GREENROUTE_GPU` (d
 - **Phase 3** — from GPU joules to the grid: server and data-centre overhead, emissions by location and hour, and how much work can shift in time.
 - **Phase 4** — the serving framework and router, checked against live measured runs.
 
-Details and reasoning are in [`ROADMAP.md`](ROADMAP.md).
+- **The product** — a model gateway that routes every request for energy, latency and throughput together at a chosen accuracy, with an energy receipt on every response.
+
+Details and reasoning, including the product vision, are in [`ROADMAP.md`](ROADMAP.md).
 
 ## Help wanted
 
