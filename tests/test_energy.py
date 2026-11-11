@@ -1,6 +1,9 @@
+import time
+from types import SimpleNamespace
+
 import pytest
 
-from greenroute.energy import EnergyMeter, EnergyReading
+from greenroute.energy import EnergyMeter, EnergyReading, TelemetrySampler
 from greenroute.report import summarize
 
 
@@ -30,6 +33,26 @@ class FakeNVML:
 
     def nvmlSystemGetDriverVersion(self):
         return "1.0"
+
+    # Telemetry reads
+    NVML_CLOCK_SM = 1
+    NVML_TEMPERATURE_GPU = 0
+
+    def nvmlDeviceGetPowerUsage(self, h):
+        return 250_000  # mW
+
+    def nvmlDeviceGetClockInfo(self, h, kind):
+        assert kind == self.NVML_CLOCK_SM
+        return 1980
+
+    def nvmlDeviceGetUtilizationRates(self, h):
+        return SimpleNamespace(gpu=87)
+
+    def nvmlDeviceGetMemoryInfo(self, h):
+        return SimpleNamespace(used=72e9)
+
+    def nvmlDeviceGetTemperature(self, h, kind):
+        return 55
 
 
 def test_span_sums_gpus_in_joules():
@@ -75,3 +98,21 @@ def test_summarize_zero_correct_is_none_not_crash():
     s = summarize(r, idle_watts=0.0, n_tasks=5, n_correct=0, output_tokens=0)
     assert s["j_per_solved_task_total"] is None
     assert s["j_per_output_token_total"] is None
+
+
+def test_telemetry_sampler_collects_and_summarizes():
+    meter = EnergyMeter(nvml=FakeNVML(gpus=1))
+    with TelemetrySampler(meter, interval=0.01) as tel:
+        time.sleep(0.08)
+    assert len(tel.samples) >= 3
+    s0 = tel.samples[0]
+    assert s0["power_w"] == 250.0 and s0["sm_clock_mhz"] == 1980 and s0["mem_used_gb"] == 72.0
+    summary = tel.summary()
+    assert summary["power_w_mean"] == 250.0
+    assert summary["util_pct_max"] == 87
+    assert summary["n_samples"] == len(tel.samples)
+
+
+def test_telemetry_summary_empty_is_safe():
+    tel = TelemetrySampler(EnergyMeter(nvml=FakeNVML(gpus=1)))
+    assert tel.summary() == {"n_samples": 0}

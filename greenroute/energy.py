@@ -8,6 +8,8 @@ internally over a window.
 
 from __future__ import annotations
 
+import statistics
+import threading
 import time
 from dataclasses import dataclass, field
 
@@ -87,3 +89,68 @@ class _Span:
         seconds = time.perf_counter() - self._t0
         per_gpu = [(b - a) / 1000.0 for a, b in zip(self._e0, e1)]
         self.reading = EnergyReading(joules=sum(per_gpu), seconds=seconds, per_gpu_joules=per_gpu)
+
+
+TELEMETRY_FIELDS = ("power_w", "sm_clock_mhz", "util_pct", "mem_used_gb", "temp_c")
+
+
+class TelemetrySampler:
+    """Sample GPU power, SM clock, utilization, memory and temperature in a background thread.
+
+    These explain the energy number rather than replace it: energy still comes from
+    the cumulative counter. Note `util_pct` is the share of time any kernel was
+    running, not how much of the GPU it used, so it saturates early.
+
+    Usage:
+        with TelemetrySampler(meter, interval=0.1) as tel:
+            run_workload()
+        tel.samples, tel.summary()
+    """
+
+    def __init__(self, meter: EnergyMeter, interval: float = 0.1):
+        self._nvml = meter._nvml
+        self._handles = meter._handles
+        self.interval = interval
+        self.samples: list[dict] = []
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def _read(self, h) -> dict:
+        n = self._nvml
+        return {
+            "power_w": n.nvmlDeviceGetPowerUsage(h) / 1000.0,
+            "sm_clock_mhz": n.nvmlDeviceGetClockInfo(h, n.NVML_CLOCK_SM),
+            "util_pct": n.nvmlDeviceGetUtilizationRates(h).gpu,
+            "mem_used_gb": n.nvmlDeviceGetMemoryInfo(h).used / 1e9,
+            "temp_c": n.nvmlDeviceGetTemperature(h, n.NVML_TEMPERATURE_GPU),
+        }
+
+    def _loop(self) -> None:
+        t0 = time.perf_counter()
+        while not self._stop.is_set():
+            t = round(time.perf_counter() - t0, 3)
+            for i, h in enumerate(self._handles):
+                self.samples.append({"t": t, "gpu": i, **self._read(h)})
+            self._stop.wait(self.interval)
+
+    def __enter__(self) -> "TelemetrySampler":
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join()
+
+    def summary(self) -> dict:
+        """Mean, median and max of each field over all samples (per GPU, not summed)."""
+        out: dict = {"n_samples": len(self.samples)}
+        for f in TELEMETRY_FIELDS:
+            vals = [s[f] for s in self.samples]
+            if not vals:
+                continue
+            out[f"{f}_mean"] = statistics.fmean(vals)
+            out[f"{f}_p50"] = statistics.median(vals)
+            out[f"{f}_max"] = max(vals)
+        return out
