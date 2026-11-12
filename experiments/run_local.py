@@ -51,9 +51,9 @@ def _load(kind: str):
     return mod
 
 
-def _worker(kind: str, gpu: int, port: int, jobs, results) -> None:
+def _worker(kind: str, gpu: list[int], port: int, jobs, results) -> None:
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-    os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu)
+    os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(str(g) for g in gpu)
     os.environ["GREENROUTE_PORT"] = str(port)
     mod = _load(kind)
     fn = mod.measure if kind == "phase1" else mod.sweep
@@ -80,6 +80,7 @@ def main() -> None:
     ap.add_argument("--max-num-seqs", type=int, default=256)
     ap.add_argument("--repeats", type=int, default=0)
     ap.add_argument("--gpus", default="", help="GPU indices to use (default: all)")
+    ap.add_argument("--gpus-per-run", type=int, default=1, help="> 1 splits each model over that many GPUs")
     ap.add_argument("--base-port", type=int, default=8000)
     ap.add_argument("--dry-run", action="store_true", help="list the jobs and GPUs, run nothing")
     a = ap.parse_args()
@@ -95,10 +96,11 @@ def main() -> None:
             configs = [c for c in configs if c[1] in keep]
         if a.n > 0:
             configs = [(m, t, sp, min(a.n, k) if k else a.n, th, s, cp) for m, t, sp, k, th, s, cp in configs]
-        jobs_args = [(m, t, sp, k, th, s, a.max_num_seqs, r, cp) for m, t, sp, k, th, s, cp in configs for r in reps]
+        jobs_args = [(m, t, sp, k, th, s, a.max_num_seqs, r, cp, a.gpus_per_run)
+                     for m, t, sp, k, th, s, cp in configs for r in reps]
         out_dir = ROOT / "results/phase1" / time.strftime("%Y%m%d-%H%M%S")
     else:
-        jobs_args = [(*c, r) for c in mod.SUITES[a.suite] for r in reps]
+        jobs_args = [(*c, r, a.gpus_per_run) for c in mod.SUITES[a.suite] for r in reps]
         out_dir = ROOT / "results/phase1_power" / time.strftime("%Y%m%d-%H%M%S")
 
     if a.dry_run:
@@ -108,20 +110,24 @@ def main() -> None:
             print("  ", args)
         return
     gpus = [int(g) for g in a.gpus.split(",")] if a.gpus else _visible_gpus()
+    k = a.gpus_per_run
+    groups = [gpus[i:i + k] for i in range(0, len(gpus) - k + 1, k)]  # one worker per group of k GPUs
+    if not groups:
+        sys.exit(f"--gpus-per-run {k} needs at least {k} GPUs; have {gpus}")
     out_dir.mkdir(parents=True, exist_ok=True)
     sha = git_sha(str(ROOT))
     command = "python experiments/run_local.py " + " ".join(shlex.quote(x) for x in sys.argv[1:])
     host = {"hostname": platform.node(), "provider": os.environ.get("GREENROUTE_PROVIDER")}
-    print(f"Running {len(jobs_args)} jobs on GPUs {gpus} -> {out_dir}", flush=True)
+    print(f"Running {len(jobs_args)} jobs on GPU groups {groups} -> {out_dir}", flush=True)
 
     ctx = mp.get_context("spawn")
     jobs, results = ctx.Queue(), ctx.Queue()
     for args in jobs_args:
         jobs.put(args)
     workers = []
-    for i, gpu in enumerate(gpus):
+    for i, group in enumerate(groups):
         jobs.put(None)
-        p = ctx.Process(target=_worker, args=(a.kind, gpu, a.base_port + i, jobs, results))
+        p = ctx.Process(target=_worker, args=(a.kind, group, a.base_port + i, jobs, results))
         p.start()
         workers.append(p)
 

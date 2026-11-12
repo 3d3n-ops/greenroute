@@ -84,6 +84,7 @@ def run_latency_sweep(
     client_workers: int = 8,
     thinking: bool = False,
     effort: str | None = None,
+    tensor_parallel_size: int = 1,
 ) -> dict:
     """Sweep request rates on one server. Thinking mode gets the Phase 1 token budget.
 
@@ -114,7 +115,8 @@ def run_latency_sweep(
     meter = EnergyMeter()
     log_path = "/tmp/vllm_server.log"
     cmd = ["vllm", "serve", model, "--port", str(PORT), "--max-num-seqs", str(max_num_seqs),
-           "--max-model-len", str(max_model_len), "--seed", str(seed)]
+           "--max-model-len", str(max_model_len), "--seed", str(seed),
+           "--tensor-parallel-size", str(tensor_parallel_size)]
     # Engine start-up failed transiently once on 2026-11-11 (first smoke test); retry once.
     for attempt in (1, 2):
         with open(log_path, "w") as log:
@@ -198,6 +200,7 @@ def run_latency_sweep(
                 "task": "gsm8k/test",
                 "rates": rates,
                 "max_num_seqs": max_num_seqs,
+                "tensor_parallel_size": tensor_parallel_size,
                 "max_tokens": max_tokens,
                 "duration_s": duration_s,
                 "n_min": n_min,

@@ -59,3 +59,30 @@ def test_fit_power_curve_recovers_floor_and_slope():
     assert f["j_per_token"] == pytest.approx(0.02)
     assert f["r2"] == pytest.approx(1.0)
     assert fit_power_curve(pts[:1]) is None
+
+
+def test_ramp_fit_recovers_a_known_curve():
+    import math
+
+    from greenroute.power import compare_power_curves, fit_curved_power_curve, predict_power
+
+    idle, ramp, s, b = 120.0, 250.0, 300.0, 0.03  # 30 mJ per token
+    xs = [100, 200, 400, 800, 1600, 3200, 6400, 10000]
+    pts = [(x, idle + ramp * (1 - math.exp(-x / s)) + b * x) for x in xs]
+    f = fit_curved_power_curve(pts, idle, "ramp")
+    assert f["ramp_w"] == pytest.approx(ramp, rel=0.02)
+    assert f["j_per_token"] == pytest.approx(b, rel=0.02)
+    assert f["rmse_w"] < 1.0 and f["loo_rmse_w"] < 5.0
+    assert predict_power(f, 0.0) == pytest.approx(idle)
+    # The straight line cannot follow the early ramp; the curve can.
+    cmp = compare_power_curves(pts, idle)
+    assert cmp["ramp"]["rmse_w"] < cmp["linear"]["rmse_w"] / 5
+
+
+def test_power_law_fit_and_too_few_points():
+    from greenroute.power import fit_curved_power_curve
+
+    pts = [(x, 100.0 + 8.0 * x ** 0.5) for x in (100, 400, 900, 1600, 2500)]
+    f = fit_curved_power_curve(pts, 100.0, "power")
+    assert f["k"] == pytest.approx(0.5, abs=0.01) and f["a"] == pytest.approx(8.0, rel=0.02)
+    assert fit_curved_power_curve(pts[:2], 100.0, "ramp") is None

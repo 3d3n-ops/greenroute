@@ -97,6 +97,7 @@ def run_table(
     thinking: bool = False,
     effort: str | None = None,
     max_num_seqs: int = 256,
+    tensor_parallel_size: int = 1,
     max_tokens: int | None = None,
     samples: int = 0,
     seed: int = 0,
@@ -133,7 +134,9 @@ def run_table(
     max_model_len = THINK_MAX_MODEL_LEN if thinking else FAST_MAX_MODEL_LEN
 
     meter = EnergyMeter()
-    llm = LLM(model=model, max_num_seqs=max_num_seqs, max_model_len=max_model_len, seed=seed)
+    # tensor_parallel_size > 1 splits the model over that many GPUs; the meter sums all of them.
+    llm = LLM(model=model, max_num_seqs=max_num_seqs, max_model_len=max_model_len, seed=seed,
+              tensor_parallel_size=tensor_parallel_size)
     tokenizer = llm.get_tokenizer()
     end_id = reasoning_end_ids(tokenizer, model)
     chat_kwargs = chat_template_kwargs(model, thinking, effort)  # ignored by templates without the option
@@ -258,6 +261,7 @@ def run_table(
             "thinking": thinking,
             "effort": effort,
             "max_num_seqs": max_num_seqs,
+            "tensor_parallel_size": tensor_parallel_size,
             "max_tokens": max_tokens,
             "max_model_len": max_model_len,
             **primary,

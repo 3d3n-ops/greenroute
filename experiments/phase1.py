@@ -9,6 +9,7 @@
     modal run experiments/phase1.py --suites samples    # GSM8K fast + 4 samples, samples measured at steady state
     modal run experiments/phase1.py --suites gptoss_pilot            # gpt-oss-20b, small slices, every effort
     modal run experiments/phase1.py --suites gptoss,gptoss_saturate  # gpt-oss 20b/120b x low/medium/high
+    GREENROUTE_GPUS_PER_RUN=2 modal run experiments/phase1.py --suites gptoss_120b   # 120b on 2 GPUs
 
 Each configuration runs offline at high concurrency (the saturated reference load)
 in its own container. Results: results/phase1/<run id>/<label>.json plus summary.csv.
@@ -29,6 +30,8 @@ from greenroute.modes import EFFORTS, mode_name, resolve
 from greenroute.provenance import git_sha
 
 GPU = os.environ.get("GREENROUTE_GPU", "H100")
+# GPUs per configuration: > 1 splits each model over that many GPUs (tensor parallel), labelled _tp<n>.
+GPUS_PER_RUN = int(os.environ.get("GREENROUTE_GPUS_PER_RUN", "1"))
 QWEN = ("Qwen/Qwen3-1.7B", "Qwen/Qwen3-4B", "Qwen/Qwen3-8B")
 OTHER = ("microsoft/Phi-4-mini-instruct", "allenai/OLMo-2-1124-7B-Instruct")
 # Mixture-of-experts, MXFP4 weights; both fit one 80 GB GPU. They always reason, at an effort level.
@@ -68,6 +71,7 @@ SUITES = {
     ],
     "gptoss": [(m, "gsm8k", "test", None, effort, 0) for m in GPTOSS for effort in EFFORTS],
     "gptoss_saturate": [(m, "humaneval", "test", None, effort, 0) for m in GPTOSS for effort in EFFORTS],
+    "gptoss_120b": [("openai/gpt-oss-120b", "gsm8k", "test", None, effort, 0) for effort in EFFORTS],
 }
 COPIES = {"saturate": 8, "gptoss_saturate": 8}  # problem-set copies per suite; 1 elsewhere
 
@@ -80,7 +84,7 @@ def label(model: str, task: str, split: str, mode: bool | str, copies: int = 1) 
 
 
 @app.function(
-    gpu=GPU,
+    gpu=GPU if GPUS_PER_RUN == 1 else f"{GPU}:{GPUS_PER_RUN}",
     image=gpu_image(),
     volumes={"/root/.cache/huggingface": hf_cache},
     timeout=7200,
@@ -88,13 +92,14 @@ def label(model: str, task: str, split: str, mode: bool | str, copies: int = 1) 
     max_containers=int(os.environ.get("GREENROUTE_MAX_GPUS", "4")),
 )
 def measure(model: str, task: str, split: str, n: int | None, mode: bool | str, samples: int,
-            max_num_seqs: int, rep: int = 0, copies: int = 1) -> dict:
+            max_num_seqs: int, rep: int = 0, copies: int = 1, tp: int = 1) -> dict:
     from greenroute.table import run_table
 
     thinking, effort = resolve(mode)
     result = run_table(model, task, split=split, n=n, thinking=thinking, effort=effort, samples=samples,
-                       max_num_seqs=max_num_seqs, copies=copies)
-    result["config"]["label"] = label(model, task, split, mode, copies) + (f"_r{rep}" if rep else "")
+                       max_num_seqs=max_num_seqs, copies=copies, tensor_parallel_size=tp)
+    result["config"]["label"] = (label(model, task, split, mode, copies) + (f"_tp{tp}" if tp > 1 else "")
+                                 + (f"_r{rep}" if rep else ""))
     result["config"]["repeat"] = rep
     result["config"]["gpu_requested"] = GPU
     return result
@@ -147,14 +152,14 @@ def main(suites: str = "core", n: int = 0, max_num_seqs: int = 256, tasks: str =
 
     rows = []
     reps = range(1, repeats + 1) if repeats > 0 else [0]
-    args = [(m, t, sp, k, th, s, max_num_seqs, r, cp) for m, t, sp, k, th, s, cp in configs for r in reps]
+    args = [(m, t, sp, k, th, s, max_num_seqs, r, cp, GPUS_PER_RUN) for m, t, sp, k, th, s, cp in configs for r in reps]
     for result in measure.starmap(args, return_exceptions=True, order_outputs=False):
         if isinstance(result, Exception):
             print(f"  FAILED: {result!r}", flush=True)
             continue
         cfg, s = result["config"], result["summary"]
         cfg["git_sha"] = sha
-        cfg["command"] = (f"GREENROUTE_GPU={GPU} modal run experiments/phase1.py --suites {suites} --n {n} "
+        cfg["command"] = (f"GREENROUTE_GPU={GPU} GREENROUTE_GPUS_PER_RUN={GPUS_PER_RUN} modal run experiments/phase1.py --suites {suites} --n {n} "
                           f"--tasks {tasks or 'all'} --repeats {repeats}")
         (out_dir / f"{cfg['label']}.json").write_text(json.dumps(result))
         rows.append(row(result))

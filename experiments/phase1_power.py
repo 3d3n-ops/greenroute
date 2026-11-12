@@ -31,6 +31,7 @@ from greenroute.provenance import git_sha
 
 GPU = os.environ.get("GREENROUTE_GPU", "H100")
 CPUS = float(os.environ.get("GREENROUTE_CPUS", "16"))
+GPUS_PER_RUN = int(os.environ.get("GREENROUTE_GPUS_PER_RUN", "1"))  # > 1: tensor parallel, labelled _tp<n>
 QWEN = ("Qwen/Qwen3-1.7B", "Qwen/Qwen3-4B", "Qwen/Qwen3-8B")
 # Thinking answers are ~6x longer, so the GPU saturates at far fewer requests per second.
 # 16 req/s overloads every thinking configuration, giving a saturated point from the server.
@@ -46,6 +47,7 @@ SUITES = {
     "all": [(m, think, RATES[think], DURATION_S) for m in QWEN for think in (False, True)],
     "gptoss_check": [("openai/gpt-oss-20b", effort, [1, 4], 30.0) for effort in EFFORTS],
     "gptoss": [(m, effort, RATES[effort], DURATION_S) for m in GPTOSS for effort in EFFORTS],
+    "gptoss_120b": [("openai/gpt-oss-120b", effort, RATES[effort], DURATION_S) for effort in EFFORTS],
 }
 
 hf_cache = modal.Volume.from_name("greenroute-hf-cache", create_if_missing=True)
@@ -57,7 +59,7 @@ def label(model: str, mode: bool | str) -> str:
 
 
 @app.function(
-    gpu=GPU,
+    gpu=GPU if GPUS_PER_RUN == 1 else f"{GPU}:{GPUS_PER_RUN}",
     image=gpu_image(),
     volumes={"/root/.cache/huggingface": hf_cache},
     timeout=5400,
@@ -65,13 +67,13 @@ def label(model: str, mode: bool | str) -> str:
     memory=32768,
     max_containers=int(os.environ.get("GREENROUTE_MAX_GPUS", "6")),
 )
-def sweep(model: str, mode: bool | str, rates: list[float], duration_s: float, rep: int = 0) -> dict:
+def sweep(model: str, mode: bool | str, rates: list[float], duration_s: float, rep: int = 0, tp: int = 1) -> dict:
     from greenroute.serve_bench import run_latency_sweep
 
     thinking, effort = resolve(mode)
     result = run_latency_sweep(model, rates, duration_s=duration_s, n_min=N_MIN, n_max=N_MAX, thinking=thinking,
-                               effort=effort)
-    result["config"]["label"] = label(model, mode) + (f"_r{rep}" if rep else "")
+                               effort=effort, tensor_parallel_size=tp)
+    result["config"]["label"] = label(model, mode) + (f"_tp{tp}" if tp > 1 else "") + (f"_r{rep}" if rep else "")
     result["config"]["repeat"] = rep
     result["config"]["gpu_requested"] = GPU
     return result
@@ -109,7 +111,7 @@ def rows(result: dict) -> list[dict]:
 def main(suite: str = "all", repeats: int = 0):
     """repeats: run each sweep this many times on separate containers, labelled _r1.._rN."""
     reps = range(1, repeats + 1) if repeats > 0 else [0]
-    configs = [(*c, r) for c in SUITES[suite] for r in reps]
+    configs = [(*c, r, GPUS_PER_RUN) for c in SUITES[suite] for r in reps]
     sha = git_sha()
     out_dir = Path("results/phase1_power") / time.strftime("%Y%m%d-%H%M%S")
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -123,7 +125,7 @@ def main(suite: str = "all", repeats: int = 0):
         cfg = result["config"]
         cfg["git_sha"] = sha
         cfg["cpu_requested"] = CPUS
-        cfg["command"] = f"GREENROUTE_GPU={GPU} modal run experiments/phase1_power.py --suite {suite} --repeats {repeats}"
+        cfg["command"] = f"GREENROUTE_GPU={GPU} GREENROUTE_GPUS_PER_RUN={GPUS_PER_RUN} modal run experiments/phase1_power.py --suite {suite} --repeats {repeats}"
         (out_dir / f"{cfg['label']}.json").write_text(json.dumps(result))
         for r in rows(result):
             all_rows.append(r)

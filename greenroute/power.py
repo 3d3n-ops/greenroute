@@ -15,6 +15,7 @@ first and last token, which streaming timestamps give us.
 
 from __future__ import annotations
 
+import math
 import statistics
 
 MIN_WINDOW_S = 5.0
@@ -122,3 +123,124 @@ def fit_power_curve(points: list[tuple[float, float]]) -> dict | None:
         "r2": 1 - ss_res / ss_tot if ss_tot else None,
         "n_points": len(points),
     }
+
+
+# Curved power models. All pass through the measured idle power at zero throughput,
+# which the straight line above does not: on a quiet server the GPU idles between
+# requests, so power ramps up from idle rather than starting at the serving floor.
+#
+#   ramp:  P = idle + A (1 - exp(-x / s)) + b x   ramp of A watts over ~s tokens/s, then b J per token
+#   power: P = idle + a x^k                       a single sublinear curve
+#
+# At high throughput the ramp model becomes a line with floor idle + A and slope b,
+# so its b is comparable with the straight line's per-token cost.
+
+CURVED_FORMS = ("ramp", "power")
+
+
+def _log_grid(lo: float, hi: float, n: int) -> list[float]:
+    return [lo * (hi / lo) ** (i / (n - 1)) for i in range(n)]
+
+
+def _solve2(a11, a12, a22, b1, b2):
+    det = a11 * a22 - a12 * a12
+    if abs(det) < 1e-12:
+        return None
+    return ((b1 * a22 - b2 * a12) / det, (a11 * b2 - a12 * b1) / det)
+
+
+def _fit_form(form: str, points: list[tuple[float, float]], idle_w: float) -> dict | None:
+    """Least squares for one form: linear parameters solved exactly, the shape parameter by grid search."""
+    pts = [(x, y - idle_w) for x, y in points if x > 0]
+    if len(pts) < 3:
+        return None
+    xmax = max(x for x, _ in pts)
+    best = None
+    if form == "ramp":
+        for s in _log_grid(xmax / 2000, xmax * 5, 400):
+            f = [(1 - math.exp(-x / s), x, y) for x, y in pts]
+            sol = _solve2(sum(u * u for u, _, _ in f), sum(u * x for u, x, _ in f), sum(x * x for _, x, _ in f),
+                          sum(u * y for u, _, y in f), sum(x * y for _, x, y in f))
+            if sol is None:
+                continue
+            amp, b = sol
+            if amp < 0 or b < 0:  # power never falls as work is added; fit the edge instead
+                amp = max(amp, 0.0)
+                b = max(0.0, sum(x * (y - amp * u) for u, x, y in f) / sum(x * x for _, x, _ in f))
+            sse = sum((y - amp * u - b * x) ** 2 for u, x, y in f)
+            if best is None or sse < best[0]:
+                best = (sse, {"ramp_w": amp, "ramp_tokens_per_s": s, "j_per_token": b})
+    elif form == "power":
+        for i in range(5, 151):
+            k = i / 100
+            den = sum(x ** (2 * k) for x, _ in pts)
+            a = max(0.0, sum(y * x ** k for x, y in pts) / den)
+            sse = sum((y - a * x ** k) ** 2 for x, y in pts)
+            if best is None or sse < best[0]:
+                best = (sse, {"a": a, "k": k})
+    else:
+        raise ValueError(form)
+    return {"form": form, "idle_w": idle_w, **best[1]} if best else None
+
+
+def predict_power(fit: dict, tokens_per_s: float) -> float:
+    """Watts at a throughput, from a fit_curved_power_curve() or fit_power_curve() result."""
+    x = tokens_per_s
+    form = fit.get("form", "linear")
+    if form == "linear":
+        return fit["floor_w"] + fit["j_per_token"] * x
+    if form == "ramp":
+        return fit["idle_w"] + fit["ramp_w"] * (1 - math.exp(-x / fit["ramp_tokens_per_s"])) + fit["j_per_token"] * x
+    if form == "power":
+        return fit["idle_w"] + fit["a"] * x ** fit["k"]
+    raise ValueError(form)
+
+
+def _errors(fit: dict, points: list[tuple[float, float]]) -> tuple[float, float | None]:
+    ys = [y for _, y in points]
+    my = statistics.fmean(ys)
+    ss_res = sum((y - predict_power(fit, x)) ** 2 for x, y in points)
+    ss_tot = sum((y - my) ** 2 for y in ys)
+    return math.sqrt(ss_res / len(points)), (1 - ss_res / ss_tot if ss_tot else None)
+
+
+def fit_curved_power_curve(points: list[tuple[float, float]], idle_w: float, form: str = "ramp") -> dict | None:
+    """Fit one curved form to (tokens/s, watts) points; adds RMSE, R² and leave-one-out RMSE.
+
+    Leave-one-out refits without each point in turn and predicts it, so it shows how
+    well the curve prices a traffic level it was not fitted on.
+    """
+    fit = _fit_form(form, points, idle_w)
+    if fit is None:
+        return None
+    rmse, r2 = _errors(fit, points)
+    loo = []
+    if len(points) >= 4:
+        for i, (x, y) in enumerate(points):
+            f = _fit_form(form, points[:i] + points[i + 1:], idle_w)
+            if f is not None:
+                loo.append((y - predict_power(f, x)) ** 2)
+    return {**fit, "rmse_w": rmse, "r2": r2, "loo_rmse_w": math.sqrt(statistics.fmean(loo)) if loo else None,
+            "n_points": len(points)}
+
+
+def compare_power_curves(points: list[tuple[float, float]], idle_w: float) -> dict[str, dict]:
+    """The straight line and each curved form on the same points, with comparable errors."""
+    out = {}
+    lin = fit_power_curve(points)
+    if lin:
+        lin = {"form": "linear", **lin}
+        rmse, r2 = _errors(lin, points)
+        loo = []
+        if len(points) >= 4:
+            for i, (x, y) in enumerate(points):
+                f = fit_power_curve(points[:i] + points[i + 1:])
+                if f:
+                    loo.append((y - predict_power({"form": "linear", **f}, x)) ** 2)
+        out["linear"] = {**lin, "rmse_w": rmse, "r2": r2,
+                         "loo_rmse_w": math.sqrt(statistics.fmean(loo)) if loo else None}
+    for form in CURVED_FORMS:
+        f = fit_curved_power_curve(points, idle_w, form)
+        if f:
+            out[form] = f
+    return out
