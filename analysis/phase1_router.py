@@ -32,7 +32,9 @@ PAIRS = [  # (cheap, expensive): within-model effort routing first, then across 
 def signal_cost(result: dict, name: str) -> float:
     """Energy per task spent only to compute the signal."""
     if name == "sample disagreement":
-        return result["samples"]["energy_j_total"] / len(result["records"])
+        smp = result["samples"]
+        steady = (smp.get("steady") or {}).get("j_per_task")  # saturated cost, where measured
+        return steady if steady is not None else smp["energy_j_total"] / len(result["records"])
     return 0.0  # token probabilities and length come with the answer
 
 

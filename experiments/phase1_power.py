@@ -2,6 +2,7 @@
 
     modal run experiments/phase1_power.py --suite check   # one short sweep, to test the path
     modal run experiments/phase1_power.py                  # Qwen3 1.7B/4B/8B x fast/thinking
+    modal run experiments/phase1_power.py --repeats 2      # each sweep twice, labelled _r1, _r2
 
 Each model and mode runs on its own GPU: the server loads once and steps through
 request rates. Per level, power, token throughput and energy per task are measured
@@ -29,7 +30,8 @@ GPU = os.environ.get("GREENROUTE_GPU", "H100")
 CPUS = float(os.environ.get("GREENROUTE_CPUS", "16"))
 QWEN = ("Qwen/Qwen3-1.7B", "Qwen/Qwen3-4B", "Qwen/Qwen3-8B")
 # Thinking answers are ~6x longer, so the GPU saturates at far fewer requests per second.
-RATES = {False: [1, 2, 4, 8, 16, 32, 64], True: [0.25, 0.5, 1, 2, 4, 8]}
+# 16 req/s overloads every thinking configuration, giving a saturated point from the server.
+RATES = {False: [1, 2, 4, 8, 16, 32, 64], True: [0.25, 0.5, 1, 2, 4, 8, 16]}
 DURATION_S = 90.0
 N_MIN, N_MAX = 20, 3000
 
@@ -55,11 +57,12 @@ def label(model: str, thinking: bool) -> str:
     memory=32768,
     max_containers=int(os.environ.get("GREENROUTE_MAX_GPUS", "6")),
 )
-def sweep(model: str, thinking: bool, rates: list[float], duration_s: float) -> dict:
+def sweep(model: str, thinking: bool, rates: list[float], duration_s: float, rep: int = 0) -> dict:
     from greenroute.serve_bench import run_latency_sweep
 
     result = run_latency_sweep(model, rates, duration_s=duration_s, n_min=N_MIN, n_max=N_MAX, thinking=thinking)
-    result["config"]["label"] = label(model, thinking)
+    result["config"]["label"] = label(model, thinking) + (f"_r{rep}" if rep else "")
+    result["config"]["repeat"] = rep
     result["config"]["gpu_requested"] = GPU
     return result
 
@@ -92,8 +95,10 @@ def rows(result: dict) -> list[dict]:
 
 
 @app.local_entrypoint()
-def main(suite: str = "all"):
-    configs = SUITES[suite]
+def main(suite: str = "all", repeats: int = 0):
+    """repeats: run each sweep this many times on separate containers, labelled _r1.._rN."""
+    reps = range(1, repeats + 1) if repeats > 0 else [0]
+    configs = [(*c, r) for c in SUITES[suite] for r in reps]
     sha = git_sha()
     out_dir = Path("results/phase1_power") / time.strftime("%Y%m%d-%H%M%S")
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -107,7 +112,7 @@ def main(suite: str = "all"):
         cfg = result["config"]
         cfg["git_sha"] = sha
         cfg["cpu_requested"] = CPUS
-        cfg["command"] = f"GREENROUTE_GPU={GPU} modal run experiments/phase1_power.py --suite {suite}"
+        cfg["command"] = f"GREENROUTE_GPU={GPU} modal run experiments/phase1_power.py --suite {suite} --repeats {repeats}"
         (out_dir / f"{cfg['label']}.json").write_text(json.dumps(result))
         for r in rows(result):
             all_rows.append(r)

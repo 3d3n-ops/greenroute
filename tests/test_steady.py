@@ -50,3 +50,63 @@ def test_downsample_keeps_ends_and_requested_rows():
     assert (37.0, 37.0, 63, 37) in d
     assert len(d) <= 13
     assert downsample(tl[:5], max_rows=10) == tl[:5]
+
+
+def _fake_vllm(monkeypatch):
+    import sys
+    import types
+
+    sp = types.ModuleType("vllm.sampling_params")
+    sp.RequestOutputKind = types.SimpleNamespace(DELTA="delta")
+    monkeypatch.setitem(sys.modules, "vllm", types.ModuleType("vllm"))
+    monkeypatch.setitem(sys.modules, "vllm.sampling_params", sp)
+
+
+class _Params:
+    def __init__(self, seed):
+        self.seed, self.output_kind = seed, None
+
+    def clone(self):
+        return _Params(self.seed)
+
+
+class _Engine:
+    """Finishes one request per step; each emits a token equal to its seed."""
+
+    def __init__(self):
+        self.pending = []
+
+    def add_request(self, rid, prompt, params):
+        assert params.output_kind == "delta"
+        self.pending.append((rid, params.seed))
+
+    def has_unfinished_requests(self):
+        return bool(self.pending)
+
+    def get_num_unfinished_requests(self):
+        return len(self.pending)
+
+    def step(self):
+        from types import SimpleNamespace as NS
+
+        rid, seed = self.pending.pop(0)
+        o = NS(text=str(seed), token_ids=[seed], logprobs=None, finish_reason="stop")
+        return [NS(request_id=rid, outputs=[o], finished=True)]
+
+
+class _Meter:
+    def read_mj(self):
+        return 0.0
+
+
+def test_run_engine_takes_one_params_per_prompt(monkeypatch):
+    from types import SimpleNamespace as NS
+
+    _fake_vllm(monkeypatch)
+    llm = NS(llm_engine=_Engine())
+    outs, timeline = steady.run_engine(llm, [[1], [2], [3]], [_Params(7), _Params(8), _Params(9)], _Meter())
+    assert [o.outputs[0].token_ids for o in outs] == [[7], [8], [9]]
+    assert [row[2] for row in timeline] == [3, 2, 1, 0] and timeline[-1][3] == 3
+
+    with pytest.raises(ValueError):
+        steady.run_engine(NS(llm_engine=_Engine()), [[1], [2]], [_Params(1)], _Meter())

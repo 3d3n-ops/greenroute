@@ -80,7 +80,14 @@ def run_table(
     samples: int = 0,
     seed: int = 0,
     idle_seconds: float = 10.0,
+    copies: int = 1,
 ) -> dict:
+    """copies > 1 runs the problem set that many times in one batch, so a small task
+    (HumanEval's 164 problems against 256 slots) fills the GPU and has a steady state.
+    Every copy is scored and kept as a record with its `copy` number. Identical prompts
+    share vLLM's prefix cache, which makes their prefill slightly cheaper than unique
+    prompts would be; decode, most of the energy, is unaffected.
+    """
     from vllm import LLM, SamplingParams
 
     from greenroute.bench import VLLM_VERSION
@@ -90,7 +97,8 @@ def run_table(
     from greenroute.tasks import TASKS, load_problems, split_thinking
 
     task = TASKS[task_name]
-    problems = load_problems(task, split, n, offset)
+    unique = load_problems(task, split, n, offset)
+    problems = unique * copies  # copy 0 of every problem, then copy 1, ...: copies mix in the batch
     messages = [task.build_messages(p) for p in problems]
     if max_tokens is None:
         max_tokens = THINK_MAX_TOKENS if thinking else task.max_tokens
@@ -131,8 +139,9 @@ def run_table(
     for i, (p, out, (answer, n_reason), sc) in enumerate(zip(problems, outputs, parsed, scores)):
         o = out.outputs[0]
         records.append({
-            "index": offset + i,
-            "id": p.get("task_id", offset + i),
+            "index": offset + i % len(unique),
+            "id": p.get("task_id", offset + i % len(unique)),
+            "copy": i // len(unique),
             **sc,
             "prompt_tokens": len(out.prompt_token_ids or []),
             "output_tokens": len(o.token_ids),
@@ -167,27 +176,33 @@ def run_table(
 
     sample_info = None
     if samples > 0:
-        sp = SamplingParams(n=samples, max_tokens=max_tokens, seed=seed, **sampling_kwargs(thinking))
+        # One request per sampled answer, each with its own seed, driven step by step like the
+        # greedy pass so the samples get a steady-state energy too. Request j*N+i is sample j of problem i.
+        N = len(problems)
+        flat_ids = prompt_ids * samples
+        flat_params = [SamplingParams(max_tokens=max_tokens, seed=seed + 1 + j, **sampling_kwargs(thinking))
+                       for j in range(samples) for _ in range(N)]
         with meter.span() as s_span:
-            s_out = llm.chat(messages, sp, chat_template_kwargs=chat_kwargs, use_tqdm=False)
-        flat_answers, flat_problems = [], []
-        for p, out in zip(problems, s_out):
-            for o in out.outputs:
-                flat_answers.append(split_thinking(o.text)[1])
-                flat_problems.append(p)
-        flat_scores = task.score_batch(flat_answers, flat_problems)
-        k = 0
-        for r, out in zip(records, s_out):
+            s_flat, s_timeline = run_engine(llm, flat_ids, flat_params, meter)
+        s_steady = steady_window(s_timeline, max_num_seqs)
+        flat_answers = [split_thinking(out.outputs[0].text)[1] for out in s_flat]
+        flat_scores = task.score_batch(flat_answers, problems * samples)
+        for i, r in enumerate(records):
             r["samples"] = []
-            for o in out.outputs:
-                sc = flat_scores[k]
-                k += 1
-                r["samples"].append({"correct": sc["correct"], "predicted": sc.get("predicted"),
-                                     "output_tokens": len(o.token_ids)})
+            for j in range(samples):
+                k = j * N + i
+                r["samples"].append({"correct": flat_scores[k]["correct"], "predicted": flat_scores[k].get("predicted"),
+                                     "output_tokens": len(s_flat[k].outputs[0].token_ids)})
         sample_tokens = sum(s["output_tokens"] for r in records for s in r["samples"])
+        if s_steady and s_steady["j_per_output_token"]:
+            # Saturated cost of the samples, per problem: steady J/token times sample tokens per problem.
+            s_steady["j_per_task"] = s_steady["j_per_output_token"] * sample_tokens / N
         sample_info = {
             "k": samples,
             **sampling_kwargs(thinking),
+            "seeds": f"{seed + 1}..{seed + samples}, one per sample index",
+            "steady": s_steady,
+            "timeline": downsample(s_timeline),
             "energy_j_total": s_span.reading.joules,
             "energy_j_active": s_span.reading.active_joules(idle_watts),
             "seconds": s_span.reading.seconds,
@@ -202,6 +217,8 @@ def run_table(
             "task": f"{task_name}/{split}",
             "offset": offset,
             "n": len(records),
+            "n_unique": len(unique),
+            "copies": copies,
             "thinking": thinking,
             "max_num_seqs": max_num_seqs,
             "max_tokens": max_tokens,

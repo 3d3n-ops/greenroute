@@ -29,17 +29,22 @@ MIN_TURNOVER_TOKEN_SHARE = 0.1  # turnover window must hold this share of output
 def run_engine(llm, prompt_token_ids: list[list[int]], params, meter) -> tuple[list, list[tuple]]:
     """Generate for every prompt; return (outputs in prompt order, timeline).
 
+    `params` is one SamplingParams for every prompt, or a list with one per prompt
+    (e.g. a different seed per sampled answer). Each request must produce one output.
     Outputs mimic vLLM's RequestOutput for the fields the table uses: .prompt_token_ids
     and .outputs[0] with .text, .token_ids, .logprobs and .finish_reason.
     Timeline rows are (seconds, joules, unfinished requests, output tokens so far).
     """
     from vllm.sampling_params import RequestOutputKind
 
-    params = params.clone()
-    params.output_kind = RequestOutputKind.DELTA  # new tokens only: cumulative copies cost CPU on long answers
+    per_prompt = params if isinstance(params, (list, tuple)) else [params] * len(prompt_token_ids)
+    if len(per_prompt) != len(prompt_token_ids):
+        raise ValueError("need one SamplingParams per prompt")
     engine = llm.llm_engine
-    for i, ids in enumerate(prompt_token_ids):
-        engine.add_request(str(i), {"prompt_token_ids": ids}, params)
+    for i, (ids, p) in enumerate(zip(prompt_token_ids, per_prompt)):
+        p = p.clone()
+        p.output_kind = RequestOutputKind.DELTA  # new tokens only: cumulative copies cost CPU on long answers
+        engine.add_request(str(i), {"prompt_token_ids": ids}, p)
 
     acc = {str(i): {"text": [], "token_ids": [], "logprobs": [], "finish_reason": None}
            for i in range(len(prompt_token_ids))}
