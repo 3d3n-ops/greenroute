@@ -1,6 +1,9 @@
-"""Chart for a phase1_power run: energy per task against traffic, fast vs thinking, per model size.
+"""Chart for phase1_power runs: energy per task against traffic, fast vs thinking, per model size.
 
-    python analysis/plot_phase1_power.py results/phase1_power/20261111-172237
+    python analysis/plot_phase1_power.py results/phase1_power/<run id> [more run dirs ...]
+
+With several runs or repeats, each point is the mean and the bar spans min to max.
+The chart is written into the first run directory.
 """
 
 from __future__ import annotations
@@ -31,12 +34,22 @@ plt.rcParams.update({
 })
 
 
-def load(run_dir: Path) -> dict[tuple[str, bool], list[dict]]:
+def load(run_dirs: list[Path]) -> dict[tuple[str, bool], list[dict]]:
+    """Per (model, thinking): one row per rate with mean, min and max steady J/task over every run."""
+    pts = defaultdict(list)
+    for run_dir in run_dirs:
+        with open(run_dir / "summary.csv") as f:
+            for r in csv.DictReader(f):
+                if not r["steady_j_per_task"]:
+                    continue
+                key = (r["model"].split("/")[-1], r["thinking"] == "True", float(r["rate"]))
+                pts[key].append((float(r["steady_j_per_task"]), float(r["ttft_p99"] or "nan")))
     out = defaultdict(list)
-    with open(run_dir / "summary.csv") as f:
-        for r in csv.DictReader(f):
-            key = (r["model"].split("/")[-1], r["thinking"] == "True")
-            out[key].append({k: (v if k in ("label", "model", "thinking") else float(v)) for k, v in r.items()})
+    for (size, thinking, rate), vals in pts.items():
+        js = [j for j, _ in vals]
+        out[(size, thinking)].append({"rate": rate, "steady_j_per_task": sum(js) / len(js), "lo": min(js),
+                                      "hi": max(js), "n_runs": len(js),
+                                      "ttft_p99": max(t for _, t in vals)})
     for rows in out.values():
         rows.sort(key=lambda r: r["rate"])
     return out
@@ -52,6 +65,7 @@ def energy_by_mode(data: dict, out: Path) -> None:
             xs = [r["rate"] for r in rows]
             ys = [r["steady_j_per_task"] for r in rows]
             ax.plot(xs, ys, color=color, lw=2, zorder=2)
+            ax.vlines(xs, [r["lo"] for r in rows], [r["hi"] for r in rows], color=color, lw=1.5, zorder=2)
             for r, x, y in zip(rows, xs, ys):
                 over = r["ttft_p99"] > OVERLOADED_TTFT_P99_S
                 ax.plot([x], [y], marker="o", ms=7, color=color, mec=color if over else SURFACE,
@@ -73,16 +87,17 @@ def energy_by_mode(data: dict, out: Path) -> None:
     axes[0].set_yticks([5, 10, 20, 50, 100, 200, 500, 1000, 2000])
     axes[0].set_yticklabels(["5", "10", "20", "50", "100", "200", "500", "1k", "2k"])
     axes[0].yaxis.set_minor_locator(NullLocator())
+    axes[0].set_ylim(4, 2500)
     axes[0].set_ylabel("Joules per task (log)")
     handles = [Line2D([], [], color=c, lw=2, marker="o", ms=7, mec=SURFACE, label=n) for n, _, c in MODES]
     handles.append(Line2D([], [], color=INK_2, lw=0, marker="o", ms=7, mfc=SURFACE, mec=INK_2, mew=2,
                           label=f"overloaded (first-token p99 > {OVERLOADED_TTFT_P99_S:g} s)"))
     fig.legend(handles=handles, loc="upper left", frameon=False, ncol=3, fontsize=10, bbox_to_anchor=(0.0, 0.8))
-    fig.suptitle("At server traffic, thinking costs 1.3–2.1× a direct answer, not 8–12×",
+    fig.suptitle("Thinking costs 1.4–2.2× a direct answer at light traffic, 5–10× on a full GPU",
                  x=0.01, ha="left", fontsize=13, fontweight="bold")
-    fig.text(0.01, 0.885, "vLLM server on one H100 per configuration, Poisson GSM8K traffic. "
-             "Labels: thinking ÷ fast at 1 and 8 req/s.\nThe GPU's fixed power is paid either way, "
-             "so longer reasoning mostly fills capacity that would sit idle.",
+    fig.text(0.01, 0.885, "vLLM server on one H100 per configuration, Poisson GSM8K traffic; mean of runs, bars span min–max. "
+             "Labels: thinking ÷ fast at 1 and 8 req/s.\nOn a quiet GPU the fixed power is paid either way, "
+             "so longer reasoning mostly fills idle capacity; on a full one every extra token displaces other work.",
              ha="left", va="top", fontsize=10, color=INK_2)
     fig.tight_layout(rect=(0, 0, 1, 0.73))
     fig.savefig(out, dpi=200)
@@ -90,6 +105,11 @@ def energy_by_mode(data: dict, out: Path) -> None:
 
 
 if __name__ == "__main__":
-    run_dir = Path(sys.argv[1])
-    energy_by_mode(load(run_dir), run_dir / "energy_fast_vs_thinking.png")
-    print(f"wrote {run_dir / 'energy_fast_vs_thinking.png'}")
+    dirs = [Path(a) for a in sys.argv[1:]]
+    data = load(dirs)
+    for (size, thinking), rows in sorted(data.items()):
+        print(size, "thinking" if thinking else "fast",
+              "  ".join(f"{r['rate']:g}: {r['steady_j_per_task']:.1f} ({r['lo']:.1f}-{r['hi']:.1f}, n={r['n_runs']})"
+                        for r in rows))
+    energy_by_mode(data, dirs[0] / "energy_fast_vs_thinking.png")
+    print(f"wrote {dirs[0] / 'energy_fast_vs_thinking.png'}")

@@ -14,7 +14,7 @@ This is a living document. Critique is welcome — open an issue. [`ROADMAP.md`]
 
 **J per token** — GPU energy per output token at a stated load. Measurable only for models we run.
 
-**Power curve** — for each model on each GPU, power is modelled as idle power, plus a serving floor while any request is active, plus a per-token cost that grows with throughput. It is fitted from a server sweep across request rates and used to attribute energy to individual requests, which batched serving cannot measure directly. The first sweep shows power rising gradually at low throughput rather than stepping to the floor, so the straight-line fit overstates low-load power by up to about 25%; until a curved model is validated, low-load numbers come from measured levels, not the fit.
+**Power curve** — for each model on each GPU, power is modelled as idle power, plus a serving floor while any request is active, plus a per-token cost that grows with throughput. It is fitted from a server sweep across request rates and used to attribute energy to individual requests, which batched serving cannot measure directly. The first sweep shows power rising gradually at low throughput rather than stepping to the floor, so the straight-line fit overstates low-load power by up to about 25%; until a curved model is validated, low-load numbers come from measured levels, not the fit. Levels where the server falls behind (first-token latency p99 above 2 s) are left out of the fit: past its limit a server is unstable from run to run.
 
 ## Reference loads
 
@@ -40,7 +40,8 @@ An offline batch run ends with a drain-out tail: the last few long answers keep 
 - **Timeline:** the engine is driven one decoding step at a time, recording after each step the time, the energy counter, the number of unfinished requests and the output tokens so far.
 - **Window:** from the moment one concurrency cap's worth of requests has finished and been replaced (so the batch holds requests of mixed ages, as a live server's does) until unfinished requests fall below the cap (the queue is empty). If that window holds under 10% of the run's output tokens, the window from the start of the run is used instead, and the basis is recorded.
 - **Steady J/task:** energy per output token inside the window, times the workload's mean output tokens per task.
-- **No steady state:** a run with fewer problems than the concurrency cap (HumanEval's 164 against 256) never fills the GPU and reports no steady figure rather than a misleading one.
+- **No steady state:** a run with fewer problems than the concurrency cap never fills the GPU and reports no steady figure rather than a misleading one. HumanEval (164 problems against 256 slots) is therefore run as 8 copies of the set in one batch; copies share the prefix cache, which makes prefill slightly cheaper, and every copy is scored.
+- **Sampled answers** are run the same way, one request and seed per sample, so self-consistency gets a steady figure too.
 - **Both are reported:** whole-run figures stay in every result file next to the steady ones, along with the tail's energy, time and tokens.
 
 ## Measured vs estimated
@@ -59,7 +60,7 @@ An offline batch run ends with a drain-out tail: the last few long answers keep 
 
 - Report the full quality-vs-energy frontier, not a single best point.
 - Publish raw per-problem logs and the exact command and commit that produced each number. A commit hash ending in `-dirty` means the code was not committed and the number is provisional.
-- Run every headline configuration at least three times and report the spread. Measured so far on GSM8K: accuracy moves under 1 point between runs; whole-run energy per task 2–13%, steady-state 1–8%.
+- Run every headline configuration at least three times and report the spread. Measured so far on GSM8K: accuracy moves under 1 point between runs; whole-run energy per task 2–13%, steady-state 1–12%.
 - Freeze the task suite before collecting results; changing it invalidates earlier numbers.
 
 ## Open questions

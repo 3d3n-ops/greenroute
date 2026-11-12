@@ -17,10 +17,12 @@ Both lead to a product, described under [Where this leads](#where-this-leads-the
 
 ## What Phase 1 has found so far
 
-- **Reasoning effort is the biggest per-request lever.** Thinking mode costs 8–12x the energy of a direct answer on GSM8K (about 5–6x more tokens, each 1.6–1.8x dearer) for 1.5–10 points of accuracy.
+- **Reasoning effort is the biggest per-request lever, and its price depends on load.** On a full GPU, thinking mode costs 8–11x the energy of a direct answer on GSM8K for 1.5–10 points of accuracy, and 70–100x on HumanEval for 2–10 points. Under light server traffic the GPU's fixed power is paid either way, and thinking costs only 1.4–2.2x.
+- **Power curves exist for every Qwen3 model and mode.** Idle about 125 W, a serving floor of 225–386 W, and 10–31 mJ per output token; two runs each agree within a few percent.
 - **Effort routing works with a free signal.** Answering with Qwen3-8B fast and escalating its least confident answers to thinking matches always-thinking accuracy (95.1%) at 47% of the energy, with thresholds set on train and scored on test. A perfect router would reach 96.8% at 28%, so a better signal is worth looking for.
 - **Offline batches need steady-state measurement.** Whole-run energy overstated thinking mode by 1.4–1.9x because of a drain-out tail; [`METHODS.md`](METHODS.md#steady-state) defines the steady-state window now used.
-- **Results are reproducible.** Across repeat runs accuracy moves under 1 point and steady-state energy 1–8%.
+- **Results are reproducible.** Across repeat runs accuracy moves under 1 point and steady-state energy 1–12%. Server and offline measurements of saturated thinking agree within 7–16%.
+- **Self-consistency is expensive.** Four sampled answers cost about 4.5x the answer itself, so it pays only as a signal for problems where a cheaper one fails.
 
 ## Where this fits
 
@@ -44,7 +46,7 @@ Energy per solved task splits into two factors:
 
 ## Phases
 
-### Phase 1 — Open-model ground truth (in progress)
+### Phase 1 — Open-model ground truth (done)
 
 A per-problem table for open models, which is both the benchmark's measured core and the router's training data.
 
@@ -56,7 +58,7 @@ A per-problem table for open models, which is both the benchmark's measured core
 
 **Done when:** the table exists for every configuration on both tasks, and each model has a fitted power curve.
 
-**Status:** the table exists for all six Qwen3 configurations on both tasks, the GSM8K train slice, and Phi-4-mini and OLMo-2 in fast mode. GSM8K has steady-state energy and repeats. Still to do: HumanEval at saturation (repeat the problem set or add MBPP), steady-state energy for the sampled answers, and power curves per model and mode.
+**Status:** done on 2026-11-11. The table exists for all six Qwen3 configurations on both tasks, the GSM8K train slice, and Phi-4-mini and OLMo-2 in fast mode. Both tasks have steady-state energy at saturation (HumanEval by running the set 8 times in one batch), sampled answers have steady-state energy, and each Qwen3 model and mode has a power curve from two server sweeps. Left open: power curves for the other families, HumanEval repeats, and a curved power model for low load.
 
 ### Phase 2 — Closed-model behaviour and a validated energy estimator
 

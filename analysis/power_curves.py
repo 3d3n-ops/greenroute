@@ -3,7 +3,7 @@
     python analysis/power_curves.py results/phase1_power/<run id>
 
 Power is modelled as idle + serving floor + J/token x tokens per second, fitted
-over the steady windows of every traffic level. Energy per task at a traffic
+over the steady windows of every traffic level the server kept up with. Energy per task at a traffic
 level is then (power at that throughput) / (tasks per second).
 """
 
@@ -17,13 +17,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from greenroute.power import fit_power_curve  # noqa: E402
 
+OVERLOADED_TTFT_P99_S = 2.0  # same cut as analysis/plot_phase1_power.py
+
 
 def main(run_dir: str) -> None:
     runs = {p.stem: json.loads(p.read_text()) for p in sorted(Path(run_dir).glob("*.json"))}
     print(f"{'configuration':<16} {'idle W':>7} {'floor W':>8} {'mJ/token':>9} {'R²':>6} {'max tok/s':>10} {'points':>6}")
     fits = {}
     for name, r in runs.items():
-        pts = [(lv["steady"]["tokens_per_s"], lv["steady"]["avg_watts"]) for lv in r["levels"] if lv.get("steady")]
+        # Overloaded levels (queue growing, first-token p99 above the cut) are left out: a server
+        # past its limit is unstable between runs, and the curve describes the stable range.
+        pts = [(lv["steady"]["tokens_per_s"], lv["steady"]["avg_watts"]) for lv in r["levels"]
+               if lv.get("steady") and (lv["latency"]["ttft_s"].get("p99") or 0) <= OVERLOADED_TTFT_P99_S]
         f = fit_power_curve(pts)
         fits[name] = (f, r)
         if f:

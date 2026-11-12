@@ -2,7 +2,7 @@
 
 An open benchmark for the energy cost of LLM inference — measured per **completed task at a fixed quality bar**, retries included.
 
-> Status: early. Sprints 0–2 are done: the measurement harness works and we have first results on batch size, model size and traffic level. Phase 1 of the benchmark is in progress: Qwen3 models with thinking off and on, GSM8K and HumanEval, and first effort-routing results on GSM8K (offline, at saturation). See [`ROADMAP.md`](ROADMAP.md).
+> Status: early. Sprints 0–2 are done: the measurement harness works and we have first results on batch size, model size and traffic level. Phase 1 of the benchmark is done: Qwen3 models with thinking off and on on GSM8K and HumanEval at saturation, power curves against traffic for each, and first effort-routing results on GSM8K (offline). Phase 2 (closed models) is next. See [`ROADMAP.md`](ROADMAP.md).
 
 ## The question
 
@@ -16,18 +16,18 @@ All numbers are GPU-side joules per task on one NVIDIA H100, GSM8K test set (1,3
 
 ### Reasoning effort (Phase 1)
 
-Qwen3 models can answer directly ("fast") or reason first ("thinking"). Offline at saturation, measured at steady state (see [`METHODS.md`](METHODS.md#steady-state)), two runs each ([`20261111-162535`](results/phase1/20261111-162535/summary.csv), [`20261111-163041`](results/phase1/20261111-163041/summary.csv)):
+Qwen3 models can answer directly ("fast") or reason first ("thinking"). Offline at saturation, measured at steady state (see [`METHODS.md`](METHODS.md#steady-state)), two to four runs each ([`20261111-162535`](results/phase1/20261111-162535/summary.csv), [`20261111-163041`](results/phase1/20261111-163041/summary.csv), [`20261111-180139`](results/phase1/20261111-180139/summary.csv)):
 
 | GSM8K test | Accuracy | Tokens per task | J/task (steady) | J per output token |
 | --- | --- | --- | --- | --- |
-| Qwen3-1.7B fast | 81.3% | 232 | 5.8 (5.7–5.9) | 0.025 |
+| Qwen3-1.7B fast | 81.3% | 232 | 6.1 (5.7–6.5) | 0.026 |
 | Qwen3-4B fast | 91.1% | 264 | 10.0 (9.9–10.0) | 0.038 |
 | Qwen3-8B fast | 93.7% | 261 | 13.0 (12.6–13.3) | 0.050 |
 | Qwen3-1.7B thinking | 90.5–91.2% | 1,460 | 68 (65–70) | 0.046 |
 | Qwen3-4B thinking | 93.9–94.1% | 1,340 | 82 (81–84) | 0.061 |
 | Qwen3-8B thinking | 95.1–95.2% | 1,450 | 113 (113–114) | 0.077 |
 
-- **Thinking costs 8–12x the energy of a direct answer** for 1.5–10 points of accuracy: about 5–6x more tokens, each about 1.6–1.8x dearer because reasoning chains make every step work over a longer context.
+- **On a full GPU, thinking costs 8–11x the energy of a direct answer** for 1.5–10 points of accuracy: about 5–6x more tokens, each about 1.6–1.8x dearer because reasoning chains make every step work over a longer context.
 - **Whole-run measurement overstates thinking by 1.4–1.9x.** An offline batch ends with a few very long answers running on a mostly empty GPU; a live server would fill those slots. Fast mode is overstated by only 4–15%.
 - **Routing effort per question recovers most of the accuracy for less than half the energy.** Answering with the 8B fast and sending the least confident answers to thinking mode, with the confidence threshold set on GSM8K train and applied unchanged to test ([`analysis/phase1_router.py`](analysis/phase1_router.py)):
 
@@ -41,26 +41,55 @@ Qwen3 models can answer directly ("fast") or reason first ("thinking"). Offline 
 
   The router's numbers are from one run ([`20261111-162535`](results/phase1/20261111-162535)). The gap to the perfect router is the open problem: a cheap signal that knows when the model is wrong.
 
+- **A self-consistency check costs about 4.5x the answer.** Four extra sampled answers per problem, measured at steady state, cost 28, 43 and 59 J per problem for the 1.7B, 4B and 8B fast, against 6–13 J for the answer itself.
+
+**HumanEval at saturation.** Its 164 problems cannot fill 256 batch slots, so each configuration runs the set 8 times in one batch (1,312 requests) to reach a steady state; one run ([`20261111-180139`](results/phase1/20261111-180139/summary.csv)):
+
+| HumanEval | Pass rate | Tokens per task | J/task (steady) | J per output token |
+| --- | --- | --- | --- | --- |
+| Qwen3-1.7B fast | 70.7% | 207 | 5.2 | 0.025 |
+| Qwen3-4B fast | 79.3% | 220 | 7.5 | 0.034 |
+| Qwen3-8B fast | 86.1% | 218 | 10.4 | 0.048 |
+| Qwen3-1.7B thinking | 81.1% | 3,650 | 425 | 0.117 |
+| Qwen3-4B thinking | 87.7% | 3,930 | 742 | 0.189 |
+| Qwen3-8B thinking | 88.0% | 3,900 | 827 | 0.212 |
+
+- **On code, thinking costs 70–100x a direct answer** for 2–10 points: about 18x more tokens, each 4–5x dearer. Answers this long (6–10% hit the 15,000-token limit) most likely overflow the GPU's KV cache, which holds about 395k tokens against roughly 930k for 256 such answers, so fewer requests run at once.
+- **The 8B fast passes 86.1% at 10.4 J; the 8B thinking 88.0% at 827 J.** On HumanEval, effort routing has far less accuracy to recover than on GSM8K and far more energy to spend.
+- Pass rates match the earlier single-copy runs within 2 points, and the 8 copies agree within 1–5 points.
+
 - **Model family matters.** Phi-4-mini (3.8B) scores 89.8% on GSM8K at 7.4 J/task (whole run), close to Qwen3-4B fast; OLMo-2 7B scores 84.2% at 18.7 J/task ([`20261111-151009`](results/phase1/20261111-151009/summary.csv)).
 
 ### Power curves: effort under server traffic (Phase 1)
 
-The numbers above are at saturation. A vLLM server under Poisson traffic, one H100 per configuration, with energy measured over each level's steady window ([`20261111-172237`](results/phase1_power/20261111-172237/summary.csv), one run, provisional), shows the fixed cost of a running GPU dominating:
+The numbers above are at saturation. A vLLM server under Poisson GSM8K traffic, one H100 per configuration, energy measured over each level's steady window, two runs of each sweep ([`20261111-180139`](results/phase1_power/20261111-180139/summary.csv)), shows the fixed cost of a running GPU dominating:
 
-| Fitted power curve | Idle | Floor while serving | Extra energy per output token |
+| Fitted power curve (range over 2 runs) | Idle | Floor while serving | Extra energy per output token |
 | --- | --- | --- | --- |
-| Qwen3-1.7B fast | 124 W | 241 W | 10.7 mJ |
-| Qwen3-4B fast | 136 W | 315 W | 15.5 mJ |
-| Qwen3-8B fast | 124 W | 366 W | 24.0 mJ |
-| Qwen3 1.7B / 4B / 8B thinking | 116–126 W | 263–358 W | 25.6–27.4 mJ |
+| Qwen3-1.7B fast | 129–131 W | 225–246 W | 10.4–10.9 mJ |
+| Qwen3-4B fast | 120–121 W | 286–308 W | 15.1–17.1 mJ |
+| Qwen3-8B fast | 121–122 W | 360–371 W | 22.5–23.6 mJ |
+| Qwen3-1.7B thinking | 123–127 W | 263–270 W | 25.0–27.3 mJ |
+| Qwen3-4B thinking | 130 W | 302–313 W | 27.4–29.0 mJ |
+| Qwen3-8B thinking | 124–127 W | 379–386 W | 29.1–31.0 mJ |
 
-- **The floor is most of the bill.** The 8B fast at 30 req/s draws 546 W, of which the tokens account for about 200 W.
-- **At server traffic, thinking costs 1.3–2.1x a direct answer, not 8–12x.** For the 8B at 1 req/s, 511 J vs 408 J per task (1.25x); at 8 req/s, 94 J vs 52 J (1.8x). The floor is paid either way, so longer reasoning mostly fills capacity that would sit idle. The gap widens as the GPU fills.
-- **On the 8B, a thinking token costs the same as a direct one at equal throughput** (0.068 vs 0.066 J at about 8,240 tokens/s). Thinking is dearer because it is longer.
-- **For routing, the price of escalation depends on load:** cheap on a quiet GPU, close to the offline 8–12x on a full one. A router's confidence threshold should move with traffic.
-- **Agrees with Sprint 2:** the 1.7B fast at 1 and 32 req/s gives 227 and 10.3 J/task, against 228 and 10.4.
+- **The floor is most of the bill.** The 8B fast at 32 req/s draws 543–561 W, of which the tokens account for about 190 W.
+- **How much thinking costs depends on load.** Thinking ÷ fast, energy per task at the same request rate:
 
-![Energy per task against request rate, fast vs thinking](results/phase1_power/20261111-172237/energy_fast_vs_thinking.png)
+| | 1 req/s | 8 req/s | Full GPU |
+| --- | --- | --- | --- |
+| Qwen3-1.7B | 1.7x | 2.2x | 10x |
+| Qwen3-4B | 1.4x | 2.1x | 5x |
+| Qwen3-8B | 1.4x | 1.9x | 6x |
+
+  On a quiet GPU the floor is paid either way, so longer reasoning mostly fills capacity that would sit idle. On a full one every extra token displaces other work. ("Full GPU" compares thinking at 16 req/s, where its queue grows, with the busiest fast level the server kept up with.)
+- **For routing, the price of escalation moves with traffic,** from under 2x on a quiet GPU to 5–10x on a full one. A router's confidence threshold should move with it.
+- **A thinking token costs about 10% more than a direct one at equal throughput** (8B: 0.074–0.075 vs 0.066–0.068 J at about 8,500 tokens/s). Thinking is dearer mostly because it is longer.
+- **Server and offline measurements agree.** Thinking at 16 req/s costs 63, 69 and 101 J/task (1.7B, 4B, 8B), 7–16% below the offline steady-state 68, 82 and 113 J. The 1.7B fast at 1 and 32 req/s costs 228 and 10.1 J/task, against Sprint 2's 228 and 10.4.
+
+![Energy per task against request rate, fast vs thinking](results/phase1_power/20261111-180139/energy_fast_vs_thinking.png)
+
+An earlier single run ([`20261111-172237`](results/phase1_power/20261111-172237/summary.csv)) stopped thinking at 8 req/s; it agrees within a few percent and is kept for the record.
 
 ### Load (Sprints 1–2)
 
@@ -94,9 +123,9 @@ The chart is from a repeat of the same sweep ([`20261111-123849`](results/sprint
 ### What these numbers do not show
 
 - **Routing is measured offline only.** The effort-routing numbers combine per-problem results from separate runs at saturation; no live router has been run, and at low traffic the GPU's fixed power floor changes the picture.
-- **Noise.** In Phase 1, accuracy moves under 1 point between runs and steady-state energy 1–8%. In the Sprint 1–2 numbers, which are whole-run, identical configurations differ by up to about 18% in J/task. Greedy decoding still changes the answer on 1–5% of individual problems between runs.
-- **The power curves are one provisional run.** Thinking was only run up to 8 req/s, so there is no saturated thinking point from the server; the lowest-rate thinking levels have 22–45 problems each; and power rises gradually at low load, so the straight-line fit overstates it there (for the 1.7B at 1 req/s, 243 W fitted against 197 W measured). Per-level numbers are measured; the fit is a summary.
-- **HumanEval energy is not yet at saturation.** Its 164 problems cannot fill the GPU, so its energy figures are higher than a busy server's and have no steady-state value.
+- **Noise.** In Phase 1, accuracy moves under 1 point between runs and steady-state energy 1–12%. In the Sprint 1–2 numbers, which are whole-run, identical configurations differ by up to about 18% in J/task. Greedy decoding still changes the answer on 1–5% of individual problems between runs.
+- **The power-curve fit is a summary, not a model.** Power rises gradually at low load, so the straight-line fit overstates it there (for the 1.7B fast at 1 req/s, about 245 W fitted against 200 W measured). Per-level numbers are measured. The lowest-rate thinking levels have 22–45 problems each, and overloaded levels (64 req/s for the 4B and 8B fast) differ by up to 2x between runs; they are left out of the fit.
+- **HumanEval at saturation reruns the same problems.** Identical prompts share vLLM's prefix cache, so their prefill is slightly cheaper than unique prompts' would be; decode, most of the energy, is unaffected. It is one run.
 - **Narrow scope.** Two tasks, one GPU type, five models from three families, GPU energy only (no host CPU, memory or cooling).
 - **The top of the traffic range is rough.** The 64 req/s and burst levels last about 10 seconds, and the 1.7B's burst appears to be limited by the vLLM API server, not the GPU.
 - **The first Sprint 2 sweep is superseded.** [`results/sprint2/20261111-122048`](results/sprint2/20261111-122048) was limited by a single-process load generator above about 33 req/s; it is kept for the record.
@@ -140,7 +169,7 @@ Each script's docstring lists its options. Pick the GPU with `GREENROUTE_GPU` (d
 - **Sprint 0 (done)** — one small model served with vLLM, GPU energy instrumented, first J/task number logged.
 - **Sprint 1 (done)** — repeats, batch-size sweep and three model sizes on the full GSM8K test set. Quantization was planned here and is deferred.
 - **Sprint 2 (done)** — latency vs energy for a real server under open-loop traffic, with GPU telemetry.
-- **Phase 1 (in progress)** — open-model ground truth: Qwen3 sizes with thinking off and on, GSM8K and HumanEval, per-problem correctness, tokens and confidence. The benchmark's measured core and the router's training data.
+- **Phase 1 (done)** — open-model ground truth: Qwen3 sizes with thinking off and on, GSM8K and HumanEval, per-problem correctness, tokens and confidence, and a power curve per model and mode. The benchmark's measured core and the router's training data.
 - **Phase 2** — closed models: accuracy and tokens per solved task measured through their APIs, energy estimated with an estimator validated on open models.
 - **Phase 3** — from GPU joules to the grid: server and data-centre overhead, emissions by location and hour, and how much work can shift in time.
 - **Phase 4** — the serving framework and router, checked against live measured runs.
