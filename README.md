@@ -77,6 +77,7 @@ gpt-oss always reasons, at low, medium or high effort. Both sizes are mixture-of
 - **More effort buys little.** From low to high costs 4.7–11x the energy for 1.2–3.3 points. On HumanEval the 20b at high effort scores below medium, with 37 of 1,312 answers hitting the token limit.
 - **The 120b is cramped on one H100.** Its weights leave little memory for the KV cache, so fewer requests run at once: each token costs 0.12–0.32 J, rising with answer length, and server throughput tops out near 5,000 tokens/s against about 11,000 for the 20b. These are one-GPU numbers, not the model's best case.
 - **Load moves the price of effort here too.** High ÷ low effort, energy per GSM8K task: 1.8x (20b) and 1.6x (120b) at 1 req/s on a server ([`20261111-223454`](results/phase1_power/20261111-223454/summary.csv)), 4.7x and 5.1x on a full GPU offline.
+- **Routing has a lot of room but no good signal yet.** A perfect router that answers with the 20b at low effort and escalates only its wrong answers to the 120b at high effort would reach 98.0% on GSM8K at 33 J, against 96.9% at 162 J for the 120b high alone: about 5x less energy at higher accuracy (HumanEval: 98.4% at 101 J against 97.7% at 575 J). Signals available for free capture little of it. The answer's token confidence and length save 1.1–2.5x at up to 0.5 points below the expensive configuration, and on HumanEval often nothing; gpt-oss reasons before it answers, so its answer tokens are nearly always confident. Thresholds are set by 2-fold cross-validation on the test problems, since there is no gpt-oss train run ([`analysis/gptoss_router.py`](analysis/gptoss_router.py)).
 - **Greedy decoding breaks high effort.** gpt-oss runs with OpenAI's recommended sampling (temperature 1.0), seeded per request so runs repeat; Qwen3 stays greedy. In a greedy smoke test, about 1 in 10 high-effort answers looped until the 15,000-token limit, holding 55% of all tokens, and the 20b passed 59% of a 32-problem HumanEval slice against 97% sampled ([greedy](results/phase1/20261111-220859/summary.csv), [sampled](results/phase1/20261111-222841/summary.csv)).
 
 ### Power curves: effort under server traffic (Phase 1)
@@ -109,6 +110,15 @@ The numbers above are at saturation. A vLLM server under Poisson GSM8K traffic, 
 ![Energy per task against request rate, fast vs thinking](results/phase1_power/20261111-180139/energy_fast_vs_thinking.png)
 
 An earlier single run ([`20261111-172237`](results/phase1_power/20261111-172237/summary.csv)) stopped thinking at 8 req/s; it agrees within a few percent and is kept for the record.
+
+**A curved power model.** Power on a quiet server ramps up from idle as requests arrive, then grows linearly with tokens: power = idle + A(1 − e^(−x/s)) + b·x at x tokens per second. It reduces to the straight line at high load, and passes through measured idle at zero. On every Qwen3 and gpt-oss sweep ([`analysis/power_models.py`](analysis/power_models.py)):
+
+| | Straight line | Ramp model |
+| --- | --- | --- |
+| Fit error, Qwen3 / gpt-oss | 7–27 W / 59–72 W | 0.6–5 W / 1–6 W |
+| Error pricing a level left out of the fit, Qwen3 / gpt-oss | 12–49 W / 126–178 W | 4–11 W / 6–24 W |
+
+With the ramp model, gpt-oss reaches a serving floor of 440–600 W within a few hundred tokens per second and then adds only 8–18 mJ per token, against Qwen3's 240–400 W floor and 8–29 mJ: the mixture-of-experts models pay more to be switched on and less per token.
 
 ### Load (Sprints 1–2)
 
@@ -146,7 +156,7 @@ The chart is from a repeat of the same sweep ([`20261111-123849`](results/sprint
 - **The power-curve fit is a summary, not a model.** Power rises gradually at low load, so the straight-line fit overstates it there (for the 1.7B fast at 1 req/s, about 245 W fitted against 200 W measured). Per-level numbers are measured. The lowest-rate thinking levels have 22–45 problems each, and overloaded levels (64 req/s for the 4B and 8B fast) differ by up to 2x between runs; they are left out of the fit.
 - **HumanEval at saturation reruns the same problems.** Identical prompts share vLLM's prefix cache, so their prefill is slightly cheaper than unique prompts' would be; decode, most of the energy, is unaffected. It is one run.
 - **Narrow scope.** Two tasks, one GPU type, seven models from four families, GPU energy only (no host CPU, memory or cooling). gpt-oss figures are one run each, and the 120b is measured on one GPU only.
-- **The power-curve fit does not suit gpt-oss.** Its power rises steeply at light traffic and then levels off near 500–650 W, so the straight line fits poorly (R² 0.62–0.77, against Qwen3's much tighter fits). Its fitted parameters are not reported until a curved model is validated; the per-level numbers are measured.
+- **The straight-line power fit does not suit gpt-oss.** Its power rises steeply at light traffic and then levels off near 500–650 W (R² 0.62–0.77). A curved "ramp" model that starts at idle power fits every Qwen3 and gpt-oss sweep far better (below), so pricing a traffic level between measured ones should use it.
 - **The top of the traffic range is rough.** The 64 req/s and burst levels last about 10 seconds, and the 1.7B's burst appears to be limited by the vLLM API server, not the GPU.
 - **The first Sprint 2 sweep is superseded.** [`results/sprint2/20261111-122048`](results/sprint2/20261111-122048) was limited by a single-process load generator above about 33 req/s; it is kept for the record.
 - **Known effect.** That batching and utilization drive energy per request is established in prior work. These runs validate the harness; the new contribution is meant to be the quality-matched comparison.
