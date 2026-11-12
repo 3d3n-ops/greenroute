@@ -14,7 +14,7 @@ This is a living document. Critique is welcome — open an issue. [`ROADMAP.md`]
 
 **J per token** — GPU energy per output token at a stated load. Measurable only for models we run.
 
-**Power curve** — for each model on each GPU, power is modelled as idle power, plus a serving floor while any request is active, plus a per-token cost that grows with throughput. It is fitted from a server sweep across request rates and used to attribute energy to individual requests, which batched serving cannot measure directly. The first sweep shows power rising gradually at low throughput rather than stepping to the floor, so the straight-line fit overstates low-load power by up to about 25%; until a curved model is validated, low-load numbers come from measured levels, not the fit. Levels where the server falls behind (first-token latency p99 above 2 s) are left out of the fit: past its limit a server is unstable from run to run.
+**Power curve** — for each model on each GPU, power is modelled as idle power, plus a serving floor while any request is active, plus a per-token cost that grows with throughput. It is fitted from a server sweep across request rates and used to attribute energy to individual requests, which batched serving cannot measure directly. The first sweep shows power rising gradually at low throughput rather than stepping to the floor, so the straight-line fit overstates low-load power by up to about 25%; until a curved model is validated, low-load numbers come from measured levels, not the fit. Levels where the server falls behind (first-token latency p99 above 2 s) are left out of the fit: past its limit a server is unstable from run to run. The straight line fits the mixture-of-experts gpt-oss models poorly (R² 0.62–0.77): their power rises steeply at low throughput and then levels off, so their fitted parameters are not reported until a curved model is validated.
 
 ## Reference loads
 
@@ -32,6 +32,12 @@ Lightly loaded numbers are reported from the power curve, not as a headline.
 - **Idle power:** measured with the model loaded and reported separately; "total" includes it and "active" subtracts it.
 - **Hardware is a variable:** every result records GPU model, driver, concurrency, token limits, thinking mode and serving config.
 - **Excluded from measurement:** scoring, including running HumanEval tests, happens after the energy span ends.
+
+## Decoding
+
+- **Main answers:** greedy (temperature 0) for Qwen3, as in every earlier run. gpt-oss uses OpenAI's recommended sampling (temperature 1.0, top_p 1.0): under greedy decoding about 1 in 10 of its high-effort answers looped until the token limit. Sampled answers are seeded per request (seed 1,000,000 + request index), so a rerun repeats them.
+- **Reasoning settings:** Qwen3 thinking on or off through its chat template; gpt-oss reasoning effort (low, medium, high) through its chat template offline and the `reasoning_effort` request field on the server. gpt-oss replies are parsed from the Harmony format: the answer is the text on the `final` channel, and a reply that never reaches it has no answer.
+- **Latency:** first-token time counts the first streamed token of any kind, reasoning included.
 
 ## Steady state
 

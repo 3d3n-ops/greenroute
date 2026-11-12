@@ -23,6 +23,9 @@ Both lead to a product, described under [Where this leads](#where-this-leads-the
 - **Offline batches need steady-state measurement.** Whole-run energy overstated thinking mode by 1.4–1.9x because of a drain-out tail; [`METHODS.md`](METHODS.md#steady-state) defines the steady-state window now used.
 - **Results are reproducible.** Across repeat runs accuracy moves under 1 point and steady-state energy 1–12%. Server and offline measurements of saturated thinking agree within 7–16%.
 - **Self-consistency is expensive.** Four sampled answers cost about 4.5x the answer itself, so it pays only as a signal for problems where a cheaper one fails.
+- **A small mixture-of-experts model at low effort beats every Qwen3 configuration on code.** gpt-oss-20b at low effort passes 92.5% of HumanEval at 13.3 J per task; Qwen3-8B thinking passes 88.0% at 827 J. High effort costs 4.7–11x low effort for 1–3 points.
+- **Decoding settings can dominate energy.** With greedy decoding about 1 in 10 gpt-oss high-effort answers looped to the token limit, holding over half the tokens. Each family now runs with its recommended decoding.
+- **Fitting the GPU to the model matters.** gpt-oss-120b on one H100 has little memory left for in-progress answers, so each token costs 2.5–6x the 20b's. Multi-GPU measurement is needed before judging large models.
 
 ## Where this fits
 
@@ -58,7 +61,9 @@ A per-problem table for open models, which is both the benchmark's measured core
 
 **Done when:** the table exists for every configuration on both tasks, and each model has a fitted power curve.
 
-**Status:** done on 2026-11-11. The table exists for all six Qwen3 configurations on both tasks, the GSM8K train slice, and Phi-4-mini and OLMo-2 in fast mode. Both tasks have steady-state energy at saturation (HumanEval by running the set 8 times in one batch), sampled answers have steady-state energy, and each Qwen3 model and mode has a power curve from two server sweeps. Left open: power curves for the other families, HumanEval repeats, and a curved power model for low load.
+**Status:** done on 2026-11-11. The table exists for all six Qwen3 configurations on both tasks, the GSM8K train slice, and Phi-4-mini and OLMo-2 in fast mode. Both tasks have steady-state energy at saturation (HumanEval by running the set 8 times in one batch), sampled answers have steady-state energy, and each Qwen3 model and mode has a power curve from two server sweeps.
+
+**Extension, same day:** gpt-oss-20b and -120b at low, medium and high effort, both tasks at saturation, with server sweeps. Left open: a curved power model (the straight line fits gpt-oss poorly, R² 0.62–0.77), repeat runs for gpt-oss, power curves for Phi-4-mini and OLMo-2, HumanEval repeats for Qwen3, and multi-GPU measurement for larger models.
 
 ### Phase 2 — Closed-model behaviour and a validated energy estimator
 

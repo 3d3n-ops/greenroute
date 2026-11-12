@@ -2,7 +2,7 @@
 
 An open benchmark for the energy cost of LLM inference — measured per **completed task at a fixed quality bar**, retries included.
 
-> Status: early. Sprints 0–2 are done: the measurement harness works and we have first results on batch size, model size and traffic level. Phase 1 of the benchmark is done: Qwen3 models with thinking off and on on GSM8K and HumanEval at saturation, power curves against traffic for each, and first effort-routing results on GSM8K (offline). Phase 2 (closed models) is next. See [`ROADMAP.md`](ROADMAP.md).
+> Status: early. Sprints 0–2 are done: the measurement harness works and we have first results on batch size, model size and traffic level. Phase 1 of the benchmark is done: Qwen3 models with thinking off and on and gpt-oss 20b/120b at three reasoning efforts, on GSM8K and HumanEval at saturation, power curves against traffic for each, and first effort-routing results on GSM8K (offline). Phase 2 (closed models) is next. See [`ROADMAP.md`](ROADMAP.md).
 
 ## The question
 
@@ -59,6 +59,25 @@ Qwen3 models can answer directly ("fast") or reason first ("thinking"). Offline 
 - Pass rates match the earlier single-copy runs within 2 points, and the 8 copies agree within 1–5 points.
 
 - **Model family matters.** Phi-4-mini (3.8B) scores 89.8% on GSM8K at 7.4 J/task (whole run), close to Qwen3-4B fast; OLMo-2 7B scores 84.2% at 18.7 J/task ([`20261111-151009`](results/phase1/20261111-151009/summary.csv)).
+
+### gpt-oss: reasoning effort on mixture-of-experts models (Phase 1)
+
+gpt-oss always reasons, at low, medium or high effort. Both sizes are mixture-of-experts models: each token uses a few of many expert blocks (about 3.6B of 21B parameters for the 20b, 5.1B of 117B for the 120b). Offline at saturation, one H100 per configuration, measured at steady state, HumanEval as 8 copies; one run each ([`20261111-223452`](results/phase1/20261111-223452/summary.csv)):
+
+| | GSM8K | Tokens | J/task | HumanEval | Tokens | J/task |
+| --- | --- | --- | --- | --- | --- | --- |
+| gpt-oss-20b low | 94.5% | 249 | 12.8 | 92.5% | 276 | 13.3 |
+| gpt-oss-20b medium | 95.8% | 526 | 25.4 | 96.2% | 741 | 36.7 |
+| gpt-oss-20b high | 96.1% | 1,128 | 60.1 | 95.8% | 2,618 | 145 |
+| gpt-oss-120b low | 95.7% | 249 | 31.6 | 95.3% | 335 | 59.3 |
+| gpt-oss-120b medium | 95.7% | 368 | 43.8 | 97.0% | 559 | 110 |
+| gpt-oss-120b high | 96.9% | 786 | 162 | 97.7% | 1,780 | 575 |
+
+- **gpt-oss-20b at low effort is the most efficient configuration measured so far.** On HumanEval it passes 92.5% at 13.3 J, against 86.1% at 10.4 J for Qwen3-8B fast and 88.0% at 827 J for Qwen3-8B thinking. Each output token costs about 0.05 J at every effort, the same as the dense Qwen3-8B, although the 20b has 21B parameters in all.
+- **More effort buys little.** From low to high costs 4.7–11x the energy for 1.2–3.3 points. On HumanEval the 20b at high effort scores below medium, with 37 of 1,312 answers hitting the token limit.
+- **The 120b is cramped on one H100.** Its weights leave little memory for the KV cache, so fewer requests run at once: each token costs 0.12–0.32 J, rising with answer length, and server throughput tops out near 5,000 tokens/s against about 11,000 for the 20b. These are one-GPU numbers, not the model's best case.
+- **Load moves the price of effort here too.** High ÷ low effort, energy per GSM8K task: 1.8x (20b) and 1.6x (120b) at 1 req/s on a server ([`20261111-223454`](results/phase1_power/20261111-223454/summary.csv)), 4.7x and 5.1x on a full GPU offline.
+- **Greedy decoding breaks high effort.** gpt-oss runs with OpenAI's recommended sampling (temperature 1.0), seeded per request so runs repeat; Qwen3 stays greedy. In a greedy smoke test, about 1 in 10 high-effort answers looped until the 15,000-token limit, holding 55% of all tokens, and the 20b passed 59% of a 32-problem HumanEval slice against 97% sampled ([greedy](results/phase1/20261111-220859/summary.csv), [sampled](results/phase1/20261111-222841/summary.csv)).
 
 ### Power curves: effort under server traffic (Phase 1)
 
@@ -126,7 +145,8 @@ The chart is from a repeat of the same sweep ([`20261111-123849`](results/sprint
 - **Noise.** In Phase 1, accuracy moves under 1 point between runs and steady-state energy 1–12%. In the Sprint 1–2 numbers, which are whole-run, identical configurations differ by up to about 18% in J/task. Greedy decoding still changes the answer on 1–5% of individual problems between runs.
 - **The power-curve fit is a summary, not a model.** Power rises gradually at low load, so the straight-line fit overstates it there (for the 1.7B fast at 1 req/s, about 245 W fitted against 200 W measured). Per-level numbers are measured. The lowest-rate thinking levels have 22–45 problems each, and overloaded levels (64 req/s for the 4B and 8B fast) differ by up to 2x between runs; they are left out of the fit.
 - **HumanEval at saturation reruns the same problems.** Identical prompts share vLLM's prefix cache, so their prefill is slightly cheaper than unique prompts' would be; decode, most of the energy, is unaffected. It is one run.
-- **Narrow scope.** Two tasks, one GPU type, five models from three families, GPU energy only (no host CPU, memory or cooling).
+- **Narrow scope.** Two tasks, one GPU type, seven models from four families, GPU energy only (no host CPU, memory or cooling). gpt-oss figures are one run each, and the 120b is measured on one GPU only.
+- **The power-curve fit does not suit gpt-oss.** Its power rises steeply at light traffic and then levels off near 500–650 W, so the straight line fits poorly (R² 0.62–0.77, against Qwen3's much tighter fits). Its fitted parameters are not reported until a curved model is validated; the per-level numbers are measured.
 - **The top of the traffic range is rough.** The 64 req/s and burst levels last about 10 seconds, and the 1.7B's burst appears to be limited by the vLLM API server, not the GPU.
 - **The first Sprint 2 sweep is superseded.** [`results/sprint2/20261111-122048`](results/sprint2/20261111-122048) was limited by a single-process load generator above about 33 req/s; it is kept for the record.
 - **Known effect.** That batching and utilization drive energy per request is established in prior work. These runs validate the harness; the new contribution is meant to be the quality-matched comparison.
@@ -160,6 +180,8 @@ modal run experiments/sprint1.py # repeats, batch-size sweep, model sizes (full 
 modal run experiments/sprint2.py # server under Poisson traffic: latency vs energy
 modal run experiments/phase1.py  # per-problem table: Qwen3 sizes x thinking x GSM8K/HumanEval
 modal run experiments/phase1_power.py  # power curves: server sweeps, Qwen3 sizes x fast/thinking
+modal run experiments/phase1.py --suites gptoss,gptoss_saturate  # gpt-oss 20b/120b x low/medium/high
+modal run experiments/phase1_power.py --suite gptoss            # gpt-oss power curves
 ```
 
 Each script's docstring lists its options. Pick the GPU with `GREENROUTE_GPU` (default H100; Sprint 0 defaults to A100-80GB) and Sprint 2's CPU count with `GREENROUTE_CPUS` (default 16). Every run writes JSON with the config, the exact command, the git commit and per-problem records. A commit hash ending in `-dirty` means the code that produced the result was not committed.
@@ -169,7 +191,7 @@ Each script's docstring lists its options. Pick the GPU with `GREENROUTE_GPU` (d
 - **Sprint 0 (done)** — one small model served with vLLM, GPU energy instrumented, first J/task number logged.
 - **Sprint 1 (done)** — repeats, batch-size sweep and three model sizes on the full GSM8K test set. Quantization was planned here and is deferred.
 - **Sprint 2 (done)** — latency vs energy for a real server under open-loop traffic, with GPU telemetry.
-- **Phase 1 (done)** — open-model ground truth: Qwen3 sizes with thinking off and on, GSM8K and HumanEval, per-problem correctness, tokens and confidence, and a power curve per model and mode. The benchmark's measured core and the router's training data.
+- **Phase 1 (done)** — open-model ground truth: Qwen3 sizes with thinking off and on and gpt-oss at three reasoning efforts, GSM8K and HumanEval, per-problem correctness, tokens and confidence, and a power curve per model and mode. The benchmark's measured core and the router's training data.
 - **Phase 2** — closed models: accuracy and tokens per solved task measured through their APIs, energy estimated with an estimator validated on open models.
 - **Phase 3** — from GPU joules to the grid: server and data-centre overhead, emissions by location and hour, and how much work can shift in time.
 - **Phase 4** — the serving framework and router, checked against live measured runs.
