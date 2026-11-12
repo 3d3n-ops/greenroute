@@ -15,7 +15,7 @@ import urllib.request
 
 from greenroute.bench import VLLM_VERSION
 
-PORT = 8000
+PORT = int(os.environ.get("GREENROUTE_PORT", "8000"))  # one per GPU when sweeps share a machine
 BASE_URL = f"http://127.0.0.1:{PORT}"
 
 

@@ -184,6 +184,18 @@ modal run experiments/phase1.py --suites gptoss,gptoss_saturate  # gpt-oss 20b/1
 modal run experiments/phase1_power.py --suite gptoss            # gpt-oss power curves
 ```
 
+**On a rented GPU machine instead of Modal** (RunPod, Lambda, a university server: any Linux box with an NVIDIA driver), the same suites run through one script, one configuration per GPU at a time:
+
+```bash
+bash scripts/setup_gpu_host.sh   # installs pinned packages, checks the energy counter and power limit
+source .venv-gpu/bin/activate
+python experiments/run_local.py phase1 --suites check     # Qwen3-1.7B baseline: compare with the Modal runs first
+python experiments/run_local.py phase1 --suites gptoss_pilot
+python experiments/run_local.py power --suite gptoss_check
+```
+
+Results land in the same folders and format, with the GPU's power limit recorded, since a host that caps power changes every energy number. Add `--dry-run` to list the jobs without running them.
+
 Each script's docstring lists its options. Pick the GPU with `GREENROUTE_GPU` (default H100; Sprint 0 defaults to A100-80GB) and Sprint 2's CPU count with `GREENROUTE_CPUS` (default 16). Every run writes JSON with the config, the exact command, the git commit and per-problem records. A commit hash ending in `-dirty` means the code that produced the result was not committed.
 
 ## Roadmap

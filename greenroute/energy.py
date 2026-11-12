@@ -8,6 +8,7 @@ internally over a window.
 
 from __future__ import annotations
 
+import os
 import statistics
 import threading
 import time
@@ -42,13 +43,47 @@ class EnergyMeter:
     """
 
     def __init__(self, gpu_indices: list[int] | None = None, nvml=None):
+        """Meters `gpu_indices` (NVML indices) if given, else the GPUs this process can use.
+
+        NVML ignores CUDA_VISIBLE_DEVICES and sees every GPU in the machine, so on a
+        shared multi-GPU host the meter maps CUDA_VISIBLE_DEVICES itself: GPU UUIDs,
+        or indices (which match NVML's order only with CUDA_DEVICE_ORDER=PCI_BUS_ID,
+        as experiments/run_local.py sets). Unset or unmappable: every GPU.
+        """
         if nvml is None:
             import pynvml as nvml  # provided by the nvidia-ml-py package
         self._nvml = nvml
         self._nvml.nvmlInit()
         count = self._nvml.nvmlDeviceGetCount()
-        indices = gpu_indices if gpu_indices is not None else list(range(count))
-        self._handles = [self._nvml.nvmlDeviceGetHandleByIndex(i) for i in indices]
+        self.selection = "explicit"
+        if gpu_indices is not None:
+            self._handles = [self._nvml.nvmlDeviceGetHandleByIndex(i) for i in gpu_indices]
+            return
+        handles = self._visible_handles(count)
+        if handles is None:
+            self.selection = "all"
+            handles = [self._nvml.nvmlDeviceGetHandleByIndex(i) for i in range(count)]
+        self._handles = handles
+
+    def _visible_handles(self, count: int) -> list | None:
+        visible = os.environ.get("CUDA_VISIBLE_DEVICES", "").strip()
+        if not visible:
+            return None
+        items = [v.strip() for v in visible.split(",") if v.strip()]
+        try:
+            if all(v.isdigit() for v in items):
+                if os.environ.get("CUDA_DEVICE_ORDER") != "PCI_BUS_ID" and len(items) < count:
+                    return None  # CUDA's default order may not match NVML's; cannot map safely
+                if any(int(v) >= count for v in items):
+                    return None
+                self.selection = f"CUDA_VISIBLE_DEVICES={visible}"
+                return [self._nvml.nvmlDeviceGetHandleByIndex(int(v)) for v in items]
+            if all(v.startswith(("GPU-", "MIG-")) for v in items):
+                self.selection = f"CUDA_VISIBLE_DEVICES={visible}"
+                return [self._nvml.nvmlDeviceGetHandleByUUID(v) for v in items]
+        except Exception:
+            return None
+        return None
 
     def _counters_mj(self) -> list[int]:
         return [self._nvml.nvmlDeviceGetTotalEnergyConsumption(h) for h in self._handles]
@@ -67,10 +102,37 @@ class EnergyMeter:
         return s.reading.avg_watts
 
     def device_info(self) -> list[dict]:
+        """Name, driver and, where NVML reports them, UUID, memory and power limits.
+
+        The power limit matters across providers: a host that caps it changes
+        every energy number, so it is recorded with each result.
+        """
+        def opt(fn, *args):
+            try:
+                v = fn(*args)
+                return v.decode() if isinstance(v, bytes) else v
+            except Exception:
+                return None
+
+        n = self._nvml
         info = []
         for h in self._handles:
-            name = self._nvml.nvmlDeviceGetName(h)
-            info.append({"name": name.decode() if isinstance(name, bytes) else name})
+            name = n.nvmlDeviceGetName(h)
+            d = {"name": name.decode() if isinstance(name, bytes) else name}
+            uuid = opt(getattr(n, "nvmlDeviceGetUUID", None) or (lambda _: None), h)
+            limit = opt(getattr(n, "nvmlDeviceGetEnforcedPowerLimit", None) or (lambda _: None), h)
+            default = opt(getattr(n, "nvmlDeviceGetPowerManagementDefaultLimit", None) or (lambda _: None), h)
+            mem = opt(getattr(n, "nvmlDeviceGetMemoryInfo", None) or (lambda _: None), h)
+            if uuid:
+                d["uuid"] = uuid
+            if limit is not None:
+                d["power_limit_w"] = limit / 1000.0
+            if default is not None:
+                d["default_power_limit_w"] = default / 1000.0
+            if mem is not None and hasattr(mem, "total"):
+                d["memory_gb"] = round(mem.total / 1e9, 1)
+            d["metered_by"] = self.selection
+            info.append(d)
         driver = self._nvml.nvmlSystemGetDriverVersion()
         driver = driver.decode() if isinstance(driver, bytes) else driver
         for d in info:
