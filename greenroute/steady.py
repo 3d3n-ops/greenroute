@@ -24,6 +24,10 @@ import time
 from types import SimpleNamespace
 
 MIN_TURNOVER_TOKEN_SHARE = 0.1  # turnover window must hold this share of output tokens to be the basis
+# Timeline rows are recorded when the count of unfinished requests changes, or at least this often.
+# Reading the energy counter after every decoding step doubled time per token when one long answer
+# decoded alone (pilot runs, 2026-11-12); at saturation the count changes most steps anyway.
+TIMELINE_MAX_GAP_S = 0.05
 
 
 def run_engine(llm, prompt_token_ids: list[list[int]], params, meter) -> tuple[list, list[tuple]]:
@@ -33,7 +37,8 @@ def run_engine(llm, prompt_token_ids: list[list[int]], params, meter) -> tuple[l
     (e.g. a different seed per sampled answer). Each request must produce one output.
     Outputs mimic vLLM's RequestOutput for the fields the table uses: .prompt_token_ids
     and .outputs[0] with .text, .token_ids, .logprobs and .finish_reason.
-    Timeline rows are (seconds, joules, unfinished requests, output tokens so far).
+    Timeline rows are (seconds, joules, unfinished requests, output tokens so far), taken
+    whenever the unfinished count changes and at least every TIMELINE_MAX_GAP_S, plus at the end.
     """
     from vllm.sampling_params import RequestOutputKind
 
@@ -51,6 +56,7 @@ def run_engine(llm, prompt_token_ids: list[list[int]], params, meter) -> tuple[l
     tokens = 0
     t0, e0 = time.perf_counter(), meter.read_mj()
     timeline = [(0.0, 0.0, len(prompt_token_ids), 0)]
+    last_t, last_n = 0.0, len(prompt_token_ids)
     while engine.has_unfinished_requests():
         for out in engine.step():
             o = out.outputs[0]
@@ -62,8 +68,10 @@ def run_engine(llm, prompt_token_ids: list[list[int]], params, meter) -> tuple[l
             tokens += len(o.token_ids)
             if out.finished:
                 a["finish_reason"] = o.finish_reason
-        timeline.append((time.perf_counter() - t0, (meter.read_mj() - e0) / 1000.0,
-                         engine.get_num_unfinished_requests(), tokens))
+        t, n = time.perf_counter() - t0, engine.get_num_unfinished_requests()
+        if n != last_n or n == 0 or t - last_t >= TIMELINE_MAX_GAP_S:
+            timeline.append((t, (meter.read_mj() - e0) / 1000.0, n, tokens))
+            last_t, last_n = t, n
 
     outputs = []
     for i, ids in enumerate(prompt_token_ids):

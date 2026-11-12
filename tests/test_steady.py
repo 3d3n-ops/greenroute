@@ -110,3 +110,42 @@ def test_run_engine_takes_one_params_per_prompt(monkeypatch):
 
     with pytest.raises(ValueError):
         steady.run_engine(NS(llm_engine=_Engine()), [[1], [2]], [_Params(1)], _Meter())
+
+
+class _LongTailEngine(_Engine):
+    """One request that decodes `steps` tokens before finishing, as in a drain-out tail."""
+
+    def __init__(self, steps):
+        super().__init__()
+        self.left = steps
+
+    def step(self):
+        from types import SimpleNamespace as NS
+
+        rid, seed = self.pending[0]
+        self.left -= 1
+        done = self.left == 0
+        if done:
+            self.pending.pop(0)
+        o = NS(text="x", token_ids=[seed], logprobs=None, finish_reason="stop" if done else None)
+        return [NS(request_id=rid, outputs=[o], finished=done)]
+
+
+class _CountingMeter(_Meter):
+    def __init__(self):
+        self.reads = 0
+
+    def read_mj(self):
+        self.reads += 1
+        return 0.0
+
+
+def test_run_engine_does_not_read_the_meter_every_step_of_a_long_tail(monkeypatch):
+    from types import SimpleNamespace as NS
+
+    _fake_vllm(monkeypatch)
+    meter = _CountingMeter()
+    outs, timeline = steady.run_engine(NS(llm_engine=_LongTailEngine(500)), [[1]], _Params(4), meter)
+    assert len(outs[0].outputs[0].token_ids) == 500
+    # 500 steps run in well under TIMELINE_MAX_GAP_S here, so only the start and the finish are read.
+    assert meter.reads < 10 and timeline[-1][2] == 0 and timeline[-1][3] == 500
