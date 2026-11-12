@@ -27,7 +27,7 @@ Both lead to a product, described under [Where this leads](#where-this-leads-the
 - **Decoding settings can dominate energy.** With greedy decoding about 1 in 10 gpt-oss high-effort answers looped to the token limit, holding over half the tokens. Each family now runs with its recommended decoding.
 - **The router's bottleneck is the signal, not the headroom.** A perfect router over gpt-oss settings would use about 5x less energy than the best single setting at higher accuracy, but free signals (answer confidence, length) capture 1.1–2.5x at best. Models that reason before answering are confident in their final answers, so a better signal (reasoning-token confidence, a cheap verifier, task type) is the main open problem.
 - **A curved power model works.** Power ramps up from idle and then grows linearly; this fits every sweep within 6 W and prices left-out traffic levels within 4–24 W.
-- **Fitting the GPU to the model matters.** gpt-oss-120b on one H100 has little memory left for in-progress answers, so each token costs 2.5–6x the 20b's. Multi-GPU measurement is needed before judging large models.
+- **Fitting the GPU to the model matters.** gpt-oss-120b on one H100 has little memory left for in-progress answers, so each token costs 2.5–6x the 20b's. On two H100s high effort costs 29% less, but low and medium effort cost 16–32% more: the right layout depends on answer length.
 
 ## Where this fits
 
@@ -65,7 +65,7 @@ A per-problem table for open models, which is both the benchmark's measured core
 
 **Status:** done on 2026-11-11. The table exists for all six Qwen3 configurations on both tasks, the GSM8K train slice, and Phi-4-mini and OLMo-2 in fast mode. Both tasks have steady-state energy at saturation (HumanEval by running the set 8 times in one batch), sampled answers have steady-state energy, and each Qwen3 model and mode has a power curve from two server sweeps.
 
-**Extension, same day:** gpt-oss-20b and -120b at low, medium and high effort, both tasks at saturation, with server sweeps. Left open: repeat runs for gpt-oss, a 2-GPU check of gpt-oss-120b (code ready, run blocked by the Modal plan), a better routing signal, power curves for Phi-4-mini and OLMo-2, HumanEval repeats for Qwen3, and multi-GPU measurement for larger models.
+**Extension, same day:** gpt-oss-20b and -120b at low, medium and high effort, both tasks at saturation, with server sweeps. Left open: repeat runs for gpt-oss, a better routing signal, power curves for Phi-4-mini and OLMo-2, HumanEval repeats for Qwen3, and multi-GPU measurement for larger models.
 
 ### Phase 2 — Closed-model behaviour and a validated energy estimator
 
