@@ -184,6 +184,8 @@ modal setup                      # one-time browser login
 pytest -q                        # local unit tests, no GPU needed
 ```
 
+Optional settings (GPU type, Hugging Face token, API keys) go in `.env`: `cp .env.example .env` and fill in what you need. It is git-ignored, empty values keep the defaults, and variables set in the shell take precedence.
+
 ```bash
 modal run experiments/sprint0.py # one model, 100 problems: first J/task number
 modal run experiments/sprint1.py # repeats, batch-size sweep, model sizes (full test set)
