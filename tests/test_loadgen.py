@@ -147,3 +147,49 @@ def test_common_accuracy_uses_only_the_shared_problems():
     assert common_accuracy(recs, 4) == 0.75   # 3 of the first 4
     assert common_accuracy(recs, 10) == 0.3   # same model, bigger subset, different number
     assert common_accuracy([], 4) is None
+
+
+def test_one_request_counts_reasoning_as_first_token_but_keeps_only_the_answer():
+    import asyncio
+    import time
+    from types import SimpleNamespace as NS
+
+    from greenroute.loadgen import _one_request
+
+    # gpt-oss on vLLM streams reasoning as `reasoning_content`, then the answer as `content`.
+    chunks = [NS(choices=[NS(delta=NS(content=None, reasoning_content="6 plus 2"))], usage=None),
+              NS(choices=[NS(delta=NS(content=None, reasoning_content=" is 8"))], usage=None),
+              _chunk("Answer: 8"), _chunk(usage=NS(completion_tokens=4))]
+    client = _FakeClient(chunks)
+    t0 = time.time()
+    r = asyncio.run(_one_request(client, "m", 0, [], 0.0, t0, 64, extra_body={"reasoning_effort": "low"}))
+    assert r["text"] == "Answer: 8"
+    # The first reasoning chunk (1 of 4 chunks), not the first answer chunk (3 of 4).
+    assert r["ttft_s"] < 0.6 * r["e2e_s"]
+    assert client.kwargs["extra_body"] == {"reasoning_effort": "low"}
+
+
+def test_one_request_seeds_each_sampled_request_by_index():
+    import asyncio
+    import time
+    from types import SimpleNamespace as NS
+
+    from greenroute.loadgen import _one_request
+
+    client = _FakeClient([_chunk("Answer: 8"), _chunk(usage=NS(completion_tokens=3))])
+    sampling = {"temperature": 1.0, "top_p": 1.0, "seed": 1_000_000}
+    asyncio.run(_one_request(client, "m", 7, [], 0.0, time.time(), 64, sampling=sampling))
+    assert client.kwargs["temperature"] == 1.0 and client.kwargs["top_p"] == 1.0
+    assert client.kwargs["seed"] == 1_000_007
+    assert sampling["seed"] == 1_000_000  # the caller's settings are not changed
+
+
+def test_one_request_defaults_to_greedy():
+    import asyncio
+    import time
+
+    from greenroute.loadgen import _one_request
+
+    client = _FakeClient([_chunk("x")])
+    asyncio.run(_one_request(client, "m", 0, [], 0.0, time.time(), 64))
+    assert client.kwargs["temperature"] == 0.0 and "seed" not in client.kwargs

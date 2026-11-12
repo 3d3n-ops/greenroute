@@ -3,6 +3,8 @@
     modal run experiments/phase1_power.py --suite check   # one short sweep, to test the path
     modal run experiments/phase1_power.py                  # Qwen3 1.7B/4B/8B x fast/thinking
     modal run experiments/phase1_power.py --repeats 2      # each sweep twice, labelled _r1, _r2
+    modal run experiments/phase1_power.py --suite gptoss_check   # gpt-oss-20b, short sweeps, every effort
+    modal run experiments/phase1_power.py --suite gptoss         # gpt-oss 20b/120b x low/medium/high
 
 Each model and mode runs on its own GPU: the server loads once and steps through
 request rates. Per level, power, token throughput and energy per task are measured
@@ -24,6 +26,7 @@ from pathlib import Path
 import modal
 
 from greenroute.modal_image import gpu_image
+from greenroute.modes import EFFORTS, mode_name, resolve
 from greenroute.provenance import git_sha
 
 GPU = os.environ.get("GREENROUTE_GPU", "H100")
@@ -31,21 +34,26 @@ CPUS = float(os.environ.get("GREENROUTE_CPUS", "16"))
 QWEN = ("Qwen/Qwen3-1.7B", "Qwen/Qwen3-4B", "Qwen/Qwen3-8B")
 # Thinking answers are ~6x longer, so the GPU saturates at far fewer requests per second.
 # 16 req/s overloads every thinking configuration, giving a saturated point from the server.
-RATES = {False: [1, 2, 4, 8, 16, 32, 64], True: [0.25, 0.5, 1, 2, 4, 8, 16]}
+# gpt-oss effort levels: rates are a guess to re-centre once real answer lengths are known.
+RATES = {False: [1, 2, 4, 8, 16, 32, 64], True: [0.25, 0.5, 1, 2, 4, 8, 16],
+         "low": [1, 2, 4, 8, 16, 32, 64], "medium": [0.5, 1, 2, 4, 8, 16, 32], "high": [0.25, 0.5, 1, 2, 4, 8, 16]}
+GPTOSS = ("openai/gpt-oss-20b", "openai/gpt-oss-120b")
 DURATION_S = 90.0
 N_MIN, N_MAX = 20, 3000
 
 SUITES = {
     "check": [("Qwen/Qwen3-1.7B", True, [1, 4], 30.0)],
     "all": [(m, think, RATES[think], DURATION_S) for m in QWEN for think in (False, True)],
+    "gptoss_check": [("openai/gpt-oss-20b", effort, [1, 4], 30.0) for effort in EFFORTS],
+    "gptoss": [(m, effort, RATES[effort], DURATION_S) for m in GPTOSS for effort in EFFORTS],
 }
 
 hf_cache = modal.Volume.from_name("greenroute-hf-cache", create_if_missing=True)
 app = modal.App("greenroute-phase1-power")
 
 
-def label(model: str, thinking: bool) -> str:
-    return f"{model.split('/')[-1]}_{'think' if thinking else 'fast'}"
+def label(model: str, mode: bool | str) -> str:
+    return f"{model.split('/')[-1]}_{mode_name(*resolve(mode))}"
 
 
 @app.function(
@@ -57,18 +65,20 @@ def label(model: str, thinking: bool) -> str:
     memory=32768,
     max_containers=int(os.environ.get("GREENROUTE_MAX_GPUS", "6")),
 )
-def sweep(model: str, thinking: bool, rates: list[float], duration_s: float, rep: int = 0) -> dict:
+def sweep(model: str, mode: bool | str, rates: list[float], duration_s: float, rep: int = 0) -> dict:
     from greenroute.serve_bench import run_latency_sweep
 
-    result = run_latency_sweep(model, rates, duration_s=duration_s, n_min=N_MIN, n_max=N_MAX, thinking=thinking)
-    result["config"]["label"] = label(model, thinking) + (f"_r{rep}" if rep else "")
+    thinking, effort = resolve(mode)
+    result = run_latency_sweep(model, rates, duration_s=duration_s, n_min=N_MIN, n_max=N_MAX, thinking=thinking,
+                               effort=effort)
+    result["config"]["label"] = label(model, mode) + (f"_r{rep}" if rep else "")
     result["config"]["repeat"] = rep
     result["config"]["gpu_requested"] = GPU
     return result
 
 
 CSV_FIELDS = [
-    "label", "model", "thinking", "rate", "n", "achieved_rps", "accuracy",
+    "label", "model", "thinking", "effort", "rate", "n", "achieved_rps", "accuracy",
     "steady_s", "steady_watts", "steady_tokens_per_s", "steady_j_per_token", "steady_j_per_task",
     "whole_j_per_task", "ttft_p50", "ttft_p99", "e2e_p50", "e2e_p99", "running_mean", "waiting_mean",
     "idle_watts", "n_errors",
@@ -81,7 +91,8 @@ def rows(result: dict) -> list[dict]:
     for lv in result["levels"]:
         st, e, lat, v = lv.get("steady") or {}, lv["energy"], lv["latency"], lv["vllm"]
         out.append({
-            "label": cfg["label"], "model": cfg["model"], "thinking": cfg["thinking"], "rate": lv["rate"],
+            "label": cfg["label"], "model": cfg["model"], "thinking": cfg["thinking"],
+            "effort": cfg.get("effort"), "rate": lv["rate"],
             "n": lv["n"], "achieved_rps": lat["achieved_rps"], "accuracy": e["accuracy"],
             "steady_s": st.get("seconds"), "steady_watts": st.get("avg_watts"),
             "steady_tokens_per_s": st.get("tokens_per_s"), "steady_j_per_token": st.get("j_per_output_token"),

@@ -69,3 +69,19 @@ def test_confidence_skips_reasoning_and_summarizes_answer():
     assert abs(c["mean_lp"] - (-0.2)) < 1e-9
     assert confidence(ids, None, 0) == {}
     assert confidence(ids, lps, n_reasoning=4) == {}
+
+
+def test_split_thinking_harmony():
+    # gpt-oss, decoded with special tokens kept: reasoning on "analysis", answer on "final".
+    text = ("<|channel|>analysis<|message|>6 plus 2 is 8.<|end|>"
+            "<|start|>assistant<|channel|>final<|message|>Answer: 8<|return|>")
+    assert split_thinking(text) == ("6 plus 2 is 8.", "Answer: 8")
+    # Cut off before the final channel: no answer.
+    assert split_thinking("<|channel|>analysis<|message|>so it is 7 or") == ("so it is 7 or", None)
+
+
+def test_reasoning_tokens_with_a_marker_sequence():
+    # gpt-oss's end of reasoning is three tokens: <|channel|> final <|message|>.
+    assert reasoning_tokens([1, 2, 7, 8, 9, 4, 5], [7, 8, 9]) == 5
+    assert reasoning_tokens([1, 7, 8, 2], [7, 8, 9]) == 0
+    assert reasoning_tokens([7, 8, 9, 3, 7, 8, 9, 4], [7, 8, 9]) == 7  # the last occurrence counts

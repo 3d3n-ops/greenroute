@@ -29,14 +29,32 @@ def think_end_id(tokenizer) -> int | None:
     return tid
 
 
-def reasoning_tokens(token_ids: list[int], end_id: int | None) -> int:
-    """Tokens up to and including '</think>'; 0 when it never appears.
+def reasoning_end_ids(tokenizer, model: str) -> list[int] | None:
+    """Token ids that end the reasoning: '</think>' for Qwen3, the final-channel header for gpt-oss."""
+    from greenroute.modes import HARMONY_FINAL, is_harmony
 
+    if is_harmony(model):
+        ids = tokenizer(HARMONY_FINAL, add_special_tokens=False).input_ids
+        return list(ids) or None
+    tid = think_end_id(tokenizer)
+    return None if tid is None else [tid]
+
+
+def reasoning_tokens(token_ids: list[int], end: int | list[int] | None) -> int:
+    """Tokens up to and including the end-of-reasoning marker; 0 when it never appears.
+
+    `end` is one token id or a sequence of them (the last occurrence counts).
     A reply whose reasoning never closed is all reasoning; the caller handles that
-    case from the decoded text, which shows the unclosed <think>.
+    case from the decoded text.
     """
-    ids = list(token_ids)
-    return ids.index(end_id) + 1 if end_id is not None and end_id in ids else 0
+    if end is None:
+        return 0
+    seq = [end] if isinstance(end, int) else list(end)
+    ids, k = list(token_ids), len(seq)
+    for i in range(len(ids) - k, -1, -1):
+        if ids[i:i + k] == seq:
+            return i + k
+    return 0
 
 
 def confidence(token_ids: list[int], logprobs, n_reasoning: int) -> dict:
@@ -63,9 +81,11 @@ def confidence(token_ids: list[int], logprobs, n_reasoning: int) -> dict:
     }
 
 
-def sampling_kwargs(thinking: bool) -> dict:
-    """Qwen3's recommended sampling settings for each mode."""
-    return {"temperature": 0.6, "top_p": 0.95} if thinking else {"temperature": 0.7, "top_p": 0.8}
+def sampling_kwargs(thinking: bool, model: str = "Qwen") -> dict:
+    """The model family's recommended sampling settings for each mode (see greenroute.modes)."""
+    from greenroute.modes import sampling_kwargs as family_kwargs
+
+    return family_kwargs(model, thinking)
 
 
 def run_table(
@@ -75,6 +95,7 @@ def run_table(
     n: int | None = None,
     offset: int = 0,
     thinking: bool = False,
+    effort: str | None = None,
     max_num_seqs: int = 256,
     max_tokens: int | None = None,
     samples: int = 0,
@@ -82,7 +103,10 @@ def run_table(
     idle_seconds: float = 10.0,
     copies: int = 1,
 ) -> dict:
-    """copies > 1 runs the problem set that many times in one batch, so a small task
+    """effort: gpt-oss reasoning effort (low / medium / high). gpt-oss always reasons, so
+    it runs with thinking=True and the thinking token budget.
+
+    copies > 1 runs the problem set that many times in one batch, so a small task
     (HumanEval's 164 problems against 256 slots) fills the GPU and has a steady state.
     Every copy is scored and kept as a record with its `copy` number. Identical prompts
     share vLLM's prefix cache, which makes their prefill slightly cheaper than unique
@@ -92,10 +116,14 @@ def run_table(
 
     from greenroute.bench import VLLM_VERSION
     from greenroute.energy import EnergyMeter
+    from greenroute.modes import PRIMARY_SEED_BASE, chat_template_kwargs, is_harmony, primary_sampling
     from greenroute.report import summarize
     from greenroute.steady import downsample, run_engine, steady_window
     from greenroute.tasks import TASKS, load_problems, split_thinking
 
+    harmony = is_harmony(model)
+    if harmony:
+        thinking = True
     task = TASKS[task_name]
     unique = load_problems(task, split, n, offset)
     problems = unique * copies  # copy 0 of every problem, then copy 1, ...: copies mix in the batch
@@ -107,8 +135,8 @@ def run_table(
     meter = EnergyMeter()
     llm = LLM(model=model, max_num_seqs=max_num_seqs, max_model_len=max_model_len, seed=seed)
     tokenizer = llm.get_tokenizer()
-    end_id = think_end_id(tokenizer)
-    chat_kwargs = {"enable_thinking": thinking}  # ignored by templates that have no thinking mode
+    end_id = reasoning_end_ids(tokenizer, model)
+    chat_kwargs = chat_template_kwargs(model, thinking, effort)  # ignored by templates without the option
     # Rendered and tokenized here, as llm.chat would, so the engine can be driven step by step.
     prompt_ids = [
         tokenizer(tokenizer.apply_chat_template(m, tokenize=False, add_generation_prompt=True, **chat_kwargs),
@@ -116,13 +144,20 @@ def run_table(
         for m in messages
     ]
 
-    greedy = SamplingParams(temperature=0.0, max_tokens=max_tokens, logprobs=1)
+    # gpt-oss: keep Harmony's special tokens in the text, which is how its answer is found.
+    decode = {"skip_special_tokens": False} if harmony else {}
+    primary = primary_sampling(model)
+    if primary["temperature"] > 0:  # seeded per request: reproducible, and copies of a problem differ
+        main_params = [SamplingParams(max_tokens=max_tokens, logprobs=1, seed=seed * PRIMARY_SEED_BASE
+                                      + PRIMARY_SEED_BASE + i, **primary, **decode) for i in range(len(prompt_ids))]
+    else:
+        main_params = SamplingParams(max_tokens=max_tokens, logprobs=1, **primary, **decode)
     llm.chat(messages[:8], SamplingParams(temperature=0.0, max_tokens=64), chat_template_kwargs=chat_kwargs,
              use_tqdm=False)  # warm-up, not measured
     idle_watts = meter.idle_watts(idle_seconds)
 
     with meter.span() as span:
-        outputs, timeline = run_engine(llm, prompt_ids, greedy, meter)
+        outputs, timeline = run_engine(llm, prompt_ids, main_params, meter)
     steady = steady_window(timeline, max_num_seqs)
 
     def parse(o) -> tuple[str | None, int]:
@@ -180,7 +215,8 @@ def run_table(
         # greedy pass so the samples get a steady-state energy too. Request j*N+i is sample j of problem i.
         N = len(problems)
         flat_ids = prompt_ids * samples
-        flat_params = [SamplingParams(max_tokens=max_tokens, seed=seed + 1 + j, **sampling_kwargs(thinking))
+        flat_params = [SamplingParams(max_tokens=max_tokens, seed=seed + 1 + j, **decode,
+                                      **sampling_kwargs(thinking, model))
                        for j in range(samples) for _ in range(N)]
         with meter.span() as s_span:
             s_flat, s_timeline = run_engine(llm, flat_ids, flat_params, meter)
@@ -199,7 +235,7 @@ def run_table(
             s_steady["j_per_task"] = s_steady["j_per_output_token"] * sample_tokens / N
         sample_info = {
             "k": samples,
-            **sampling_kwargs(thinking),
+            **sampling_kwargs(thinking, model),
             "seeds": f"{seed + 1}..{seed + samples}, one per sample index",
             "steady": s_steady,
             "timeline": downsample(s_timeline),
@@ -220,10 +256,13 @@ def run_table(
             "n_unique": len(unique),
             "copies": copies,
             "thinking": thinking,
+            "effort": effort,
             "max_num_seqs": max_num_seqs,
             "max_tokens": max_tokens,
             "max_model_len": max_model_len,
-            "temperature": 0.0,
+            **primary,
+            "primary_seeds": f"{seed * PRIMARY_SEED_BASE + PRIMARY_SEED_BASE} + request index"
+            if primary["temperature"] > 0 else None,
             "logprobs": 1,
             "seed": seed,
             "vllm": VLLM_VERSION,

@@ -7,6 +7,8 @@
     modal run experiments/phase1.py --tasks gsm8k --repeats 2   # repeat runs, labelled _r1, _r2
     modal run experiments/phase1.py --suites saturate   # HumanEval x8 copies, so it fills the GPU
     modal run experiments/phase1.py --suites samples    # GSM8K fast + 4 samples, samples measured at steady state
+    modal run experiments/phase1.py --suites gptoss_pilot            # gpt-oss-20b, small slices, every effort
+    modal run experiments/phase1.py --suites gptoss,gptoss_saturate  # gpt-oss 20b/120b x low/medium/high
 
 Each configuration runs offline at high concurrency (the saturated reference load)
 in its own container. Results: results/phase1/<run id>/<label>.json plus summary.csv.
@@ -23,14 +25,18 @@ from pathlib import Path
 import modal
 
 from greenroute.modal_image import gpu_image
+from greenroute.modes import EFFORTS, mode_name, resolve
 from greenroute.provenance import git_sha
 
 GPU = os.environ.get("GREENROUTE_GPU", "H100")
 QWEN = ("Qwen/Qwen3-1.7B", "Qwen/Qwen3-4B", "Qwen/Qwen3-8B")
 OTHER = ("microsoft/Phi-4-mini-instruct", "allenai/OLMo-2-1124-7B-Instruct")
+# Mixture-of-experts, MXFP4 weights; both fit one 80 GB GPU. They always reason, at an effort level.
+GPTOSS = ("openai/gpt-oss-20b", "openai/gpt-oss-120b")
 SAMPLES_FAST = 4  # sampled answers per problem with thinking off; 0 with thinking on (cost)
 
-# (model, task, split, n or None for all, thinking, samples)
+# (model, task, split, n or None for all, mode, samples)
+# mode: True/False (thinking on/off, Qwen3-style) or a gpt-oss effort, "low" / "medium" / "high".
 SUITES = {
     "pilot": [
         ("Qwen/Qwen3-1.7B", "gsm8k", "test", 64, False, 2),
@@ -56,15 +62,21 @@ SUITES = {
     "saturate": [(m, "humaneval", "test", None, think, 0) for m in QWEN for think in (False, True)],
     # Sampled answers driven step by step, so self-consistency gets a steady-state energy.
     "samples": [(m, "gsm8k", "test", None, False, SAMPLES_FAST) for m in QWEN],
+    "gptoss_pilot": [
+        ("openai/gpt-oss-20b", task, "test", n, effort, 0)
+        for effort in EFFORTS for task, n in (("gsm8k", 64), ("humaneval", 32))
+    ],
+    "gptoss": [(m, "gsm8k", "test", None, effort, 0) for m in GPTOSS for effort in EFFORTS],
+    "gptoss_saturate": [(m, "humaneval", "test", None, effort, 0) for m in GPTOSS for effort in EFFORTS],
 }
-COPIES = {"saturate": 8}  # problem-set copies per suite; 1 elsewhere
+COPIES = {"saturate": 8, "gptoss_saturate": 8}  # problem-set copies per suite; 1 elsewhere
 
 hf_cache = modal.Volume.from_name("greenroute-hf-cache", create_if_missing=True)
 app = modal.App("greenroute-phase1")
 
 
-def label(model: str, task: str, split: str, thinking: bool, copies: int = 1) -> str:
-    return f"{model.split('/')[-1]}_{'think' if thinking else 'fast'}_{task}-{split}" + (f"_x{copies}" if copies > 1 else "")
+def label(model: str, task: str, split: str, mode: bool | str, copies: int = 1) -> str:
+    return f"{model.split('/')[-1]}_{mode_name(*resolve(mode))}_{task}-{split}" + (f"_x{copies}" if copies > 1 else "")
 
 
 @app.function(
@@ -75,20 +87,21 @@ def label(model: str, task: str, split: str, thinking: bool, copies: int = 1) ->
     cpu=8.0,  # HumanEval tests run in parallel subprocesses after the measured span
     max_containers=int(os.environ.get("GREENROUTE_MAX_GPUS", "4")),
 )
-def measure(model: str, task: str, split: str, n: int | None, thinking: bool, samples: int,
+def measure(model: str, task: str, split: str, n: int | None, mode: bool | str, samples: int,
             max_num_seqs: int, rep: int = 0, copies: int = 1) -> dict:
     from greenroute.table import run_table
 
-    result = run_table(model, task, split=split, n=n, thinking=thinking, samples=samples,
+    thinking, effort = resolve(mode)
+    result = run_table(model, task, split=split, n=n, thinking=thinking, effort=effort, samples=samples,
                        max_num_seqs=max_num_seqs, copies=copies)
-    result["config"]["label"] = label(model, task, split, thinking, copies) + (f"_r{rep}" if rep else "")
+    result["config"]["label"] = label(model, task, split, mode, copies) + (f"_r{rep}" if rep else "")
     result["config"]["repeat"] = rep
     result["config"]["gpu_requested"] = GPU
     return result
 
 
 CSV_FIELDS = [
-    "label", "model", "task", "thinking", "n", "accuracy", "n_truncated", "n_no_answer",
+    "label", "model", "task", "thinking", "effort", "n", "accuracy", "n_truncated", "n_no_answer",
     "mean_output_tokens", "mean_reasoning_tokens", "tokens_per_solved_task",
     "j_per_task_total", "j_per_solved_task_total", "j_per_solved_task_active", "j_per_output_token_total",
     "steady_basis", "steady_j_per_output_token", "steady_j_per_task", "steady_j_per_solved_task",
@@ -101,7 +114,7 @@ def row(result: dict) -> dict:
     cfg, s, smp = result["config"], result["summary"], result.get("samples") or {}
     return {
         "label": cfg["label"], "model": cfg["model"], "task": cfg["task"], "thinking": cfg["thinking"],
-        "n": cfg["n"], "gpu": cfg["devices"][0]["name"], "copies": cfg.get("copies", 1),
+        "effort": cfg.get("effort"), "n": cfg["n"], "gpu": cfg["devices"][0]["name"], "copies": cfg.get("copies", 1),
         **{k: s.get(k) for k in CSV_FIELDS if k in s},
         "steady_basis": (s.get("steady") or {}).get("basis"),
         "steady_j_per_output_token": (s.get("steady") or {}).get("j_per_output_token"),
@@ -153,7 +166,7 @@ def main(suites: str = "core", n: int = 0, max_num_seqs: int = 256, tasks: str =
             flush=True,
         )
 
-    rows.sort(key=lambda r: (r["task"], r["model"], r["thinking"]))
+    rows.sort(key=lambda r: (r["task"], r["model"], r["thinking"], r["effort"] or ""))
     with open(out_dir / "summary.csv", "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=CSV_FIELDS)
         w.writeheader()

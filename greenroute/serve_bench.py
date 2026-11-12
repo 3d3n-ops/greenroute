@@ -83,8 +83,11 @@ def run_latency_sweep(
     seed: int = 0,
     client_workers: int = 8,
     thinking: bool = False,
+    effort: str | None = None,
 ) -> dict:
     """Sweep request rates on one server. Thinking mode gets the Phase 1 token budget.
+
+    effort: gpt-oss reasoning effort (low / medium / high); gpt-oss always reasons.
 
     Levels needing more requests than the test set has reuse problems from the start.
     """
@@ -92,12 +95,19 @@ def run_latency_sweep(
 
     from greenroute import gsm8k
     from greenroute.energy import EnergyMeter, TelemetrySampler
+    from greenroute.modes import PRIMARY_SEED_BASE, is_harmony, primary_sampling, request_extra_body
     from greenroute.loadgen import make_pool, percentiles, run_level, send_lag, summarize_metrics
     from greenroute.power import steady_level
     from greenroute.report import summarize
     from greenroute.table import FAST_MAX_MODEL_LEN, THINK_MAX_MODEL_LEN, THINK_MAX_TOKENS
     from greenroute.tasks import split_thinking
 
+    if is_harmony(model):
+        thinking = True
+    extra_body = request_extra_body(model, thinking, effort)
+    sampling = primary_sampling(model)
+    if sampling["temperature"] > 0:
+        sampling["seed"] = seed * PRIMARY_SEED_BASE + PRIMARY_SEED_BASE  # request i gets this + i
     if max_tokens is None:
         max_tokens = THINK_MAX_TOKENS if thinking else 1024
     max_model_len = THINK_MAX_MODEL_LEN if thinking else FAST_MAX_MODEL_LEN
@@ -124,7 +134,8 @@ def run_latency_sweep(
         # Warm up kernels, CUDA graphs and the HTTP path; not measured.
         warm = [gsm8k.build_messages(test[i]["question"]) for i in range(16)]
         asyncio.run(run_level(BASE_URL, model, warm, rate=0, pool=pool, workers=client_workers,
-                              max_tokens=min(max_tokens, 256), thinking=thinking))
+                              max_tokens=min(max_tokens, 256), extra_body=extra_body,
+                              sampling=sampling))
         idle_watts = meter.idle_watts(idle_seconds)
 
         levels = []
@@ -135,7 +146,8 @@ def run_latency_sweep(
 
             with TelemetrySampler(meter, interval=0.1) as tel, meter.span() as span:
                 out = asyncio.run(run_level(BASE_URL, model, messages, rate=rate, pool=pool, workers=client_workers,
-                                            seed=seed, max_tokens=max_tokens, thinking=thinking))
+                                            seed=seed, max_tokens=max_tokens, extra_body=extra_body,
+                                            sampling=sampling))
 
             recs = out["records"]
             for r, p in zip(recs, problems):
@@ -190,9 +202,12 @@ def run_latency_sweep(
                 "duration_s": duration_s,
                 "n_min": n_min,
                 "n_max": n_max,
-                "temperature": 0.0,
+                "sampling": sampling,
+                "temperature": sampling["temperature"],
                 "seed": seed,
                 "thinking": thinking,
+                "effort": effort,
+                "request_extra_body": extra_body,
                 "max_model_len": max_model_len,
                 "vllm": VLLM_VERSION,
                 "mode": "openai-server, open-loop Poisson arrivals, streaming",
